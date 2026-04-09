@@ -2,6 +2,10 @@
 
 All notable changes to `syriable/laravel-translator` will be documented in this file.
 
+## v1.0.0 - 2026-04-09
+
+**Full Changelog**: https://github.com/outegram/laravel-translator/commits/v1.0.0
+
 ## [1.0.0] - 2026-04-09
 
 ### Added
