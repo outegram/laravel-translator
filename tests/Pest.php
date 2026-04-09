@@ -1,5 +1,15 @@
 <?php
 
-use VendorName\Skeleton\Tests\TestCase;
+declare(strict_types=1);
 
-uses(TestCase::class)->in(__DIR__);
+/*
+|--------------------------------------------------------------------------
+| Test Case
+|--------------------------------------------------------------------------
+|
+| Pest automatically discovers tests using the PHPUnit backend.
+| The uses() helper applies base TestCase configuration to all tests.
+|
+*/
+
+uses(Syriable\Translator\Tests\TestCase::class)->in('Unit', 'Feature');

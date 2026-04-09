@@ -1,37 +1,52 @@
 <?php
 
-namespace VendorName\Skeleton\Tests;
+declare(strict_types=1);
 
-use Illuminate\Database\Eloquent\Factories\Factory;
-use Orchestra\Testbench\TestCase as Orchestra;
-use VendorName\Skeleton\SkeletonServiceProvider;
+namespace Syriable\Translator\Tests;
 
-class TestCase extends Orchestra
+use Orchestra\Testbench\TestCase as OrchestraTestCase;
+use Syriable\Translator\TranslatorServiceProvider;
+
+/**
+ * Base test case for all Syriable Translator tests.
+ *
+ * Bootstraps the package service provider and sets up an in-memory SQLite
+ * database so tests run in isolation without requiring an external database.
+ */
+abstract class TestCase extends OrchestraTestCase
 {
     protected function setUp(): void
     {
         parent::setUp();
 
-        Factory::guessFactoryNamesUsing(
-            fn (string $modelName) => 'VendorName\\Skeleton\\Database\\Factories\\'.class_basename($modelName).'Factory'
-        );
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+        $this->loadMigrationsFrom(__DIR__.'/../vendor/orchestra/testbench-core/laravel/migrations');
     }
 
-    protected function getPackageProviders($app)
+    protected function getPackageProviders($app): array
     {
         return [
-            SkeletonServiceProvider::class,
+            TranslatorServiceProvider::class,
         ];
     }
 
-    public function getEnvironmentSetUp($app)
+    protected function defineEnvironment($app): void
     {
-        config()->set('database.default', 'testing');
+        // Use SQLite in-memory for fast, isolated test runs.
+        $app['config']->set('database.default', 'testing');
+        $app['config']->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
 
-        /*
-         foreach (\Illuminate\Support\Facades\File::allFiles(__DIR__ . '/../database/migrations') as $migration) {
-            (include $migration->getRealPath())->up();
-         }
-         */
+        // Use a consistent source language for all tests.
+        $app['config']->set('translator.source_language', 'en');
+
+        // Disable AI cache by default so tests don't depend on cache state.
+        $app['config']->set('translator.ai.cache.enabled', false);
+
+        // Use array cache driver in tests.
+        $app['config']->set('cache.default', 'array');
     }
 }
