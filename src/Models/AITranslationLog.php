@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Override;
 use Syriable\Translator\Database\Factories\AITranslationLogFactory;
 use Syriable\Translator\Models\Concerns\HasTranslatorTable;
 
@@ -76,7 +77,7 @@ final class AITranslationLog extends Model
         'failed_keys',
     ];
 
-    #[\Override]
+    #[Override]
     protected function casts(): array
     {
         return [

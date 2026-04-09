@@ -7,6 +7,7 @@ namespace Syriable\Translator\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Override;
 use Syriable\Translator\Models\Concerns\HasTranslatorTable;
 
 /**
@@ -52,7 +53,7 @@ final class ImportLog extends Model
         'fresh',
     ];
 
-    #[\Override]
+    #[Override]
     protected function casts(): array
     {
         return [

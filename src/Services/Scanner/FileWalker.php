@@ -115,7 +115,8 @@ final class FileWalker
     private function isIgnored(string $absolutePath, array $ignoredSegments): bool
     {
         $normalizedPath = str_replace('\\', '/', $absolutePath);
-        return array_any($ignoredSegments, fn($segment) => str_contains($normalizedPath, '/'.$segment.'/'));
+
+        return array_any($ignoredSegments, fn ($segment) => str_contains($normalizedPath, '/'.$segment.'/'));
     }
 
     /**
@@ -132,7 +133,8 @@ final class FileWalker
         }
 
         $normalizedPath = str_replace('\\', '/', $absolutePath);
-        return array_any($allowedExtensions, fn($extension) => str_ends_with($normalizedPath, '.'.ltrim((string) $extension, '.')));
+
+        return array_any($allowedExtensions, fn ($extension) => str_ends_with($normalizedPath, '.'.ltrim((string) $extension, '.')));
     }
 
     /**

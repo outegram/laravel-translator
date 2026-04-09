@@ -6,6 +6,7 @@ namespace Syriable\Translator\Models;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Override;
 use Syriable\Translator\Models\Concerns\HasTranslatorTable;
 
 /**
@@ -36,7 +37,7 @@ final class ExportLog extends Model
         'triggered_by',
     ];
 
-    #[\Override]
+    #[Override]
     protected function casts(): array
     {
         return [

@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
+use Override;
 use Syriable\Translator\Database\Factories\GroupFactory;
 use Syriable\Translator\Models\Concerns\HasTranslatorTable;
 
@@ -68,7 +69,7 @@ final class Group extends Model
         'file_path',
     ];
 
-    #[\Override]
+    #[Override]
     protected function casts(): array
     {
         return [

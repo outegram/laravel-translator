@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
+use Override;
 use Syriable\Translator\Database\Factories\LanguageFactory;
 use Syriable\Translator\Models\Concerns\HasTranslatorTable;
 
@@ -59,7 +60,7 @@ final class Language extends Model
         'is_source',
     ];
 
-    #[\Override]
+    #[Override]
     protected function casts(): array
     {
         return [

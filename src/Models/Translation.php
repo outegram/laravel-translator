@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
+use Override;
 use Syriable\Translator\Database\Factories\TranslationFactory;
 use Syriable\Translator\Enums\TranslationStatus;
 use Syriable\Translator\Models\Concerns\HasTranslatorTable;
@@ -60,7 +61,7 @@ final class Translation extends Model
         'status',
     ];
 
-    #[\Override]
+    #[Override]
     protected function casts(): array
     {
         return [
