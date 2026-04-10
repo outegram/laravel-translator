@@ -58,12 +58,12 @@ return [
     */
 
     'models' => [
-        'language' => Language::class,
-        'group' => Group::class,
+        'language'        => Language::class,
+        'group'           => Group::class,
         'translation_key' => TranslationKey::class,
-        'translation' => Translation::class,
-        'import_log' => ImportLog::class,
-        'export_log' => ExportLog::class,
+        'translation'     => Translation::class,
+        'import_log'      => ImportLog::class,
+        'export_log'      => ExportLog::class,
     ],
 
     /*
@@ -90,7 +90,6 @@ return [
         'detect_plural' => env('TRANSLATOR_DETECT_PLURAL', true),
 
         // Filenames (with .php extension) to skip during import.
-        // Example: ['validation.php', 'passwords.php']
         'exclude_files' => [],
 
         // Records processed per DB chunk in TranslationKeyReplicator.
@@ -155,9 +154,9 @@ return [
 
     'cache' => [
         'enabled' => env('TRANSLATOR_CACHE_ENABLED', true),
-        'store' => env('TRANSLATOR_CACHE_STORE', null),
-        'ttl' => env('TRANSLATOR_CACHE_TTL', 3600),
-        'prefix' => env('TRANSLATOR_CACHE_PREFIX', 'syriable_translator'),
+        'store'   => env('TRANSLATOR_CACHE_STORE', null),
+        'ttl'     => env('TRANSLATOR_CACHE_TTL', 3600),
+        'prefix'  => env('TRANSLATOR_CACHE_PREFIX', 'syriable_translator'),
     ],
 
     /*
@@ -167,14 +166,24 @@ return [
     */
 
     'events' => [
-        'import_completed' => env('TRANSLATOR_EVENT_IMPORT_COMPLETED', true),
-        'export_completed' => env('TRANSLATOR_EVENT_EXPORT_COMPLETED', true),
+        'import_completed'         => env('TRANSLATOR_EVENT_IMPORT_COMPLETED', true),
+        'export_completed'         => env('TRANSLATOR_EVENT_EXPORT_COMPLETED', true),
+
+        // Dispatched by AITranslationService after every translation execution.
+        // Hook into this from a companion package to send notifications, invalidate
+        // caches, or trigger downstream workflows without polling.
+        'ai_translation_completed' => env('TRANSLATOR_EVENT_AI_COMPLETED', true),
     ],
 
     /*
     |--------------------------------------------------------------------------
     | Log Retention
     |--------------------------------------------------------------------------
+    |
+    | Number of days to retain ImportLog, ExportLog, and AITranslationLog records.
+    | The translator:prune-logs command (registered with the scheduler weekly)
+    | deletes records older than this threshold. Set to 0 to disable pruning.
+    |
     */
 
     'log_retention_days' => env('TRANSLATOR_LOG_RETENTION_DAYS', 90),
@@ -183,13 +192,6 @@ return [
     |--------------------------------------------------------------------------
     | AI Translation Configuration
     |--------------------------------------------------------------------------
-    |
-    | Powers the `translator:ai-translate` command.
-    |
-    | CRITICAL RULE: Translations are NEVER executed without showing a cost
-    | estimate first. The estimate() → confirm → translate() sequence is
-    | enforced architecturally by the AITranslationService.
-    |
     */
 
     'ai' => [
@@ -198,10 +200,6 @@ return [
         |----------------------------------------------------------------------
         | Default Provider
         |----------------------------------------------------------------------
-        |
-        | Used when --provider is not passed to the command.
-        | Must match a key under `ai.providers`.
-        |
         */
 
         'default_provider' => env('TRANSLATOR_AI_PROVIDER', 'claude'),
@@ -210,10 +208,6 @@ return [
         |----------------------------------------------------------------------
         | Queue
         |----------------------------------------------------------------------
-        |
-        | Queue name for TranslateKeysJob when --queue flag is used.
-        | Set to 'sync' to bypass the queue entirely.
-        |
         */
 
         'queue' => env('TRANSLATOR_AI_QUEUE', 'default'),
@@ -222,13 +216,6 @@ return [
         |----------------------------------------------------------------------
         | Batch Size
         |----------------------------------------------------------------------
-        |
-        | Maximum keys per API request. Tune based on provider token limits
-        | and typical translation string length in your application.
-        |
-        | Smaller: fewer tokens per call, more API calls, safer for complex strings.
-        | Larger:  fewer API calls, cheaper overhead, risk of hitting token limits.
-        |
         */
 
         'batch_size' => env('TRANSLATOR_AI_BATCH_SIZE', 50),
@@ -237,55 +224,57 @@ return [
         |----------------------------------------------------------------------
         | Fallback Cost Rate
         |----------------------------------------------------------------------
-        |
-        | Applied when no provider-specific rate is found. Override per-provider
-        | using input_cost_per_1k_tokens / output_cost_per_1k_tokens below.
-        |
         */
 
         'default_cost_per_1k_tokens' => 0.005,
 
         /*
         |----------------------------------------------------------------------
-        | AI Translation Cache
+        | Translation Memory
         |----------------------------------------------------------------------
         |
-        | Caches translated values to avoid re-translating identical source
-        | strings. The cache key includes the source value hash, so cached
-        | results are automatically invalidated when source text changes.
+        | When enabled, the AI system prompt is enriched with previously reviewed
+        | translations for the target language. This improves terminology
+        | consistency across batches and across separate translation runs.
         |
+        | Only Reviewed-status translations are used as memory — never Translated
+        | — to prevent unreviewed AI output from being re-fed into future prompts.
+        |
+        | limit — Maximum number of reviewed translations to inject per request.
+        |         Keep this low enough to stay within your provider's token budget.
+        |         Typical recommended range: 10–30.
+        |
+        */
+
+        'translation_memory' => [
+            'enabled' => env('TRANSLATOR_AI_MEMORY_ENABLED', true),
+            'limit'   => env('TRANSLATOR_AI_MEMORY_LIMIT', 20),
+        ],
+
+        /*
+        |----------------------------------------------------------------------
+        | AI Translation Cache
+        |----------------------------------------------------------------------
         */
 
         'cache' => [
             'enabled' => env('TRANSLATOR_AI_CACHE_ENABLED', true),
-            'ttl' => env('TRANSLATOR_AI_CACHE_TTL', 86400),
-            'prefix' => env('TRANSLATOR_AI_CACHE_PREFIX', 'translator_ai'),
+            'ttl'     => env('TRANSLATOR_AI_CACHE_TTL', 86400),
+            'prefix'  => env('TRANSLATOR_AI_CACHE_PREFIX', 'translator_ai'),
         ],
 
         /*
         |----------------------------------------------------------------------
         | Token Estimation
         |----------------------------------------------------------------------
-        |
-        | Controls how TokenEstimator approximates token counts before API calls.
-        |
-        | default_ratio          — Characters per token for Latin-script text.
-        | dense_script_ratio     — Characters per token for RTL/CJK/Indic text.
-        | default_expansion_factor — Expected output size relative to input size
-        |                           (1.2 = translated text is ~20% longer).
-        |
-        | Fine-tune per locale when your real usage data reveals inaccuracies:
-        |   'chars_per_token'   => ['de' => 3.5, 'fi' => 3.0]
-        |   'expansion_factors' => ['de' => 1.35, 'fi' => 1.40]
-        |
         */
 
         'token_estimation' => [
-            'default_ratio' => env('TRANSLATOR_AI_DEFAULT_RATIO', 4.0),
-            'dense_script_ratio' => env('TRANSLATOR_AI_DENSE_RATIO', 2.0),
+            'default_ratio'            => env('TRANSLATOR_AI_DEFAULT_RATIO', 4.0),
+            'dense_script_ratio'       => env('TRANSLATOR_AI_DENSE_RATIO', 2.0),
             'default_expansion_factor' => env('TRANSLATOR_AI_EXPANSION_FACTOR', 1.2),
-            'chars_per_token' => [],
-            'expansion_factors' => [],
+            'chars_per_token'          => [],
+            'expansion_factors'        => [],
         ],
 
         /*
@@ -293,26 +282,21 @@ return [
         | Providers
         |----------------------------------------------------------------------
         |
-        | Configure each AI translation provider here.
-        |
         | Pricing reference (always verify against current provider docs):
         |   Claude Sonnet 4.6:  $3.00 / $15.00 per 1M tokens (input/output)
         |   GPT-4o:             $2.50 / $10.00 per 1M tokens
-        |   Gemini 1.5 Pro:     $1.25 /  $5.00 per 1M tokens
         |
         */
 
         'providers' => [
 
             'claude' => [
-                'api_key' => env('ANTHROPIC_API_KEY'),
-                'model' => env('ANTHROPIC_MODEL', 'claude-haiku-4-5-20251001'),
-                'max_tokens' => env('ANTHROPIC_MAX_TOKENS', 4096),
-                'timeout_seconds' => env('ANTHROPIC_TIMEOUT', 120),
-                'max_retries' => env('ANTHROPIC_MAX_RETRIES', 3),
-
-                // Claude Sonnet 4.6 pricing (per 1,000 tokens).
-                'input_cost_per_1k_tokens' => 0.003,
+                'api_key'                   => env('ANTHROPIC_API_KEY'),
+                'model'                     => env('ANTHROPIC_MODEL', 'claude-haiku-4-5-20251001'),
+                'max_tokens'                => env('ANTHROPIC_MAX_TOKENS', 4096),
+                'timeout_seconds'           => env('ANTHROPIC_TIMEOUT', 120),
+                'max_retries'               => env('ANTHROPIC_MAX_RETRIES', 3),
+                'input_cost_per_1k_tokens'  => 0.003,
                 'output_cost_per_1k_tokens' => 0.015,
             ],
 
@@ -324,16 +308,6 @@ return [
             //     'max_retries'               => 3,
             //     'input_cost_per_1k_tokens'  => 0.0025,
             //     'output_cost_per_1k_tokens' => 0.010,
-            // ],
-
-            // 'gemini' => [
-            //     'api_key'                   => env('GEMINI_API_KEY'),
-            //     'model'                     => 'gemini-1.5-pro',
-            //     'max_tokens'                => 8192,
-            //     'timeout_seconds'           => 120,
-            //     'max_retries'               => 3,
-            //     'input_cost_per_1k_tokens'  => 0.00125,
-            //     'output_cost_per_1k_tokens' => 0.005,
             // ],
 
         ],

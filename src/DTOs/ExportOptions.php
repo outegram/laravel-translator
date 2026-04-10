@@ -14,6 +14,7 @@ final readonly class ExportOptions
         public ?string $group = null,
         public bool $sortKeys = true,
         public bool $requireApproval = false,
+        public bool $dryRun = false,
         public string $source = 'cli',
         public ?string $triggeredBy = null,
     ) {}
@@ -25,6 +26,7 @@ final readonly class ExportOptions
             group: $overrides['group'] ?? null,
             sortKeys: config('translator.export.sort_keys', true),
             requireApproval: config('translator.export.require_approval', false),
+            dryRun: $overrides['dry_run'] ?? false,
             source: $overrides['source'] ?? 'cli',
             triggeredBy: $overrides['triggered_by'] ?? null,
         );

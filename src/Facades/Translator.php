@@ -5,18 +5,39 @@ declare(strict_types=1);
 namespace Syriable\Translator\Facades;
 
 use Illuminate\Support\Facades\Facade;
-use Syriable\Translator\Services\AI\AITranslationService;
+use Syriable\Translator\Contracts\AITranslationServiceContract;
+use Syriable\Translator\DTOs\AI\TranslationEstimate;
+use Syriable\Translator\DTOs\AI\TranslationRequest;
+use Syriable\Translator\DTOs\AI\TranslationResponse;
+use Syriable\Translator\Models\Language;
 
 /**
- * @method static \Syriable\Translator\DTOs\AI\TranslationEstimate estimate(\Syriable\Translator\DTOs\AI\TranslationRequest $request, ?string $provider = null)
- * @method static \Syriable\Translator\DTOs\AI\TranslationResponse translate(\Syriable\Translator\DTOs\AI\TranslationRequest $request, \Syriable\Translator\Models\Language $language, ?string $provider = null, ?\Syriable\Translator\DTOs\AI\TranslationEstimate $estimate = null)
+ * Facade providing static access to the AI translation service.
  *
- * @see AITranslationService
+ * Resolves from the container using the `translator` binding, which is
+ * aliased to AITranslationService in TranslatorServiceProvider.
+ *
+ * Usage:
+ * ```php
+ * use Syriable\Translator\Facades\Translator;
+ *
+ * // Estimate cost before committing
+ * $estimate = Translator::estimate($request);
+ *
+ * // Execute translation after user confirms
+ * $response = Translator::translate($request, $language);
+ * ```
+ *
+ * @method static TranslationEstimate estimate(TranslationRequest $request, ?string $provider = null)
+ * @method static TranslationResponse translate(TranslationRequest $request, Language $language, ?string $provider = null, ?TranslationEstimate $estimate = null)
+ *
+ * @see \Syriable\Translator\Services\AI\AITranslationService
+ * @see \Syriable\Translator\Contracts\AITranslationServiceContract
  */
 final class Translator extends Facade
 {
     protected static function getFacadeAccessor(): string
     {
-        return AITranslationService::class;
+        return AITranslationServiceContract::class;
     }
 }

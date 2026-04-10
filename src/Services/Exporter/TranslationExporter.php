@@ -6,6 +6,7 @@ namespace Syriable\Translator\Services\Exporter;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
+use Syriable\Translator\Contracts\TranslationExporterContract;
 use Syriable\Translator\DTOs\ExportOptions;
 use Syriable\Translator\DTOs\ExportResult;
 use Syriable\Translator\Enums\TranslationStatus;
@@ -21,6 +22,13 @@ use Syriable\Translator\Models\Language;
  * as PHP group files and JSON locale files, preserving the original Laravel
  * file structure including vendor-namespaced paths.
  *
+ * ### Dry-run mode
+ *
+ * When ExportOptions::$dryRun is true, no files are written to disk. The
+ * returned ExportResult carries the same counters (locales, files, keys) and
+ * a wouldWritePaths list of the absolute paths that would have been written.
+ * ExportCompleted is NOT dispatched and no ExportLog is recorded in dry-run mode.
+ *
  * Responsibilities:
  *  - Resolving which languages and groups to export.
  *  - Loading translation values via eager-loaded relationships.
@@ -31,7 +39,7 @@ use Syriable\Translator\Models\Language;
  * All model classes are resolved from config('translator.models.*') to support
  * application-level overrides.
  */
-final readonly class TranslationExporter
+final readonly class TranslationExporter implements TranslationExporterContract
 {
     /**
      * Number of Group records processed per database chunk.
@@ -46,13 +54,11 @@ final readonly class TranslationExporter
     /**
      * Execute a full translation export and return the aggregated result.
      *
-     * Sequence:
-     *  1. Resolve the target languages (all active, or a specific locale).
-     *  2. For each language, chunk through its groups and write output files.
-     *  3. Record the export log and dispatch the ExportCompleted event.
+     * In dry-run mode, no files are written. The result still carries accurate
+     * counts and the list of paths that would have been written.
      *
      * @param  ExportOptions  $options  Typed configuration for this export run.
-     * @return ExportResult Immutable summary of the completed export.
+     * @return ExportResult Immutable summary of the completed (or previewed) export.
      */
     public function export(ExportOptions $options): ExportResult
     {
@@ -74,6 +80,11 @@ final readonly class TranslationExporter
             (int) ((microtime(true) - $startTime) * 1000),
         );
 
+        // In dry-run mode: do not log, do not dispatch the event.
+        if ($options->dryRun) {
+            return $result;
+        }
+
         $log = $this->recordExportLog($result, $options);
 
         if (config('translator.events.export_completed', true)) {
@@ -88,8 +99,6 @@ final readonly class TranslationExporter
     // -------------------------------------------------------------------------
 
     /**
-     * Resolve the collection of active languages to export.
-     *
      * @return Collection<int, Language>
      */
     private function resolveLanguages(?string $locale): Collection
@@ -100,13 +109,6 @@ final readonly class TranslationExporter
             ->get();
     }
 
-    /**
-     * Build the Group query for a given language, eager-loading only the
-     * translation values that qualify for export based on their status.
-     *
-     * When requireApproval is true, only Reviewed translations are included.
-     * Otherwise, any non-Untranslated translation is included.
-     */
     private function buildGroupQuery(Language $language, ExportOptions $options): Builder
     {
         return $this->groupModel()::query()
@@ -131,11 +133,6 @@ final readonly class TranslationExporter
     // Export Scopes
     // -------------------------------------------------------------------------
 
-    /**
-     * Export all qualifying groups for a single language.
-     *
-     * Processes groups in chunks to avoid loading the entire dataset into memory.
-     */
     private function exportLanguage(
         Language $language,
         string $langPath,
@@ -157,12 +154,6 @@ final readonly class TranslationExporter
         return $languageResult;
     }
 
-    /**
-     * Export a single Group to disk for the given language.
-     *
-     * Returns an empty result when the group has no qualifying translations,
-     * ensuring no empty files are written.
-     */
     private function exportGroup(
         Group $group,
         Language $language,
@@ -173,6 +164,20 @@ final readonly class TranslationExporter
 
         if (empty($translations)) {
             return ExportResult::empty();
+        }
+
+        $filePath = $group->isJson()
+            ? $this->buildJsonPath($langPath, $language->code)
+            : $this->buildPhpPath($langPath, $language->code, $group);
+
+        if ($options->dryRun) {
+            // In dry-run mode record the path but skip the actual write.
+            return new ExportResult(
+                keyCount: count($translations),
+                fileCount: 1,
+                dryRun: true,
+                wouldWritePaths: [$filePath],
+            );
         }
 
         $this->writeGroupFile($group, $language, $langPath, $translations, $options);
@@ -188,12 +193,6 @@ final readonly class TranslationExporter
     // -------------------------------------------------------------------------
 
     /**
-     * Write a group's translations to the appropriate file format and path.
-     *
-     * JSON groups → `{langPath}/{locale}.json`
-     * PHP app groups → `{langPath}/{locale}/{group}.php`
-     * PHP vendor groups → `{langPath}/vendor/{namespace}/{locale}/{group}.php`
-     *
      * @param  array<string, string>  $translations
      */
     private function writeGroupFile(
@@ -220,20 +219,11 @@ final readonly class TranslationExporter
         );
     }
 
-    /**
-     * Build the output path for a JSON locale file.
-     */
     private function buildJsonPath(string $langPath, string $localeCode): string
     {
         return $langPath.DIRECTORY_SEPARATOR.$localeCode.'.json';
     }
 
-    /**
-     * Build the output path for a PHP translation group file.
-     *
-     * Application: `{langPath}/{locale}/{group}.php`
-     * Vendor:      `{langPath}/vendor/{namespace}/{locale}/{group}.php`
-     */
     private function buildPhpPath(string $langPath, string $localeCode, Group $group): string
     {
         $base = $group->namespace
@@ -248,12 +238,7 @@ final readonly class TranslationExporter
     // -------------------------------------------------------------------------
 
     /**
-     * Collect qualifying translation key-value pairs from an eager-loaded Group.
-     *
-     * Only keys with a non-null translation value are included. Keys without
-     * a qualifying translation row are silently skipped.
-     *
-     * @return array<string, string> Flat key => translated-value map.
+     * @return array<string, string>
      */
     private function collectTranslations(Group $group): array
     {
@@ -274,24 +259,18 @@ final readonly class TranslationExporter
     // Logging & Configuration
     // -------------------------------------------------------------------------
 
-    /**
-     * Persist an ExportLog record summarising the completed export run.
-     */
     private function recordExportLog(ExportResult $result, ExportOptions $options): ExportLog
     {
         return $this->exportLogModel()::query()->create([
             'locale_count' => $result->localeCount,
-            'file_count' => $result->fileCount,
-            'key_count' => $result->keyCount,
-            'duration_ms' => $result->durationMs,
+            'file_count'   => $result->fileCount,
+            'key_count'    => $result->keyCount,
+            'duration_ms'  => $result->durationMs,
             'triggered_by' => $options->triggeredBy,
-            'source' => $options->source,
+            'source'       => $options->source,
         ]);
     }
 
-    /**
-     * Resolve the lang directory path from configuration.
-     */
     private function resolveLangPath(): string
     {
         return config('translator.lang_path') ?? lang_path();

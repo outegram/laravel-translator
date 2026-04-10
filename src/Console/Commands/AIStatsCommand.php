@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Syriable\Translator\Console\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
 use Syriable\Translator\Console\Concerns\DisplayHelper;
 use Syriable\Translator\Models\AITranslationLog;
 
@@ -43,7 +44,7 @@ final class AIStatsCommand extends Command
 
         $query = AITranslationLog::query()
             ->where('created_at', '>=', now()->subDays($days))
-            ->when($provider, static fn ($q) => $q->where('provider', $provider));
+            ->when($provider, static fn (Builder $q) => $q->where('provider', $provider));
 
         if ($query->count() === 0) {
             info("No AI translation logs found for the last {$days} days.");
@@ -58,10 +59,16 @@ final class AIStatsCommand extends Command
         return self::SUCCESS;
     }
 
+    // -------------------------------------------------------------------------
+    // Summary sections
+    // -------------------------------------------------------------------------
+
     /**
      * Display the overall cost and usage summary for the period.
+     *
+     * @param  Builder<AITranslationLog>  $query
      */
-    private function displayOverallSummary(mixed $query, int $days): void
+    private function displayOverallSummary(Builder $query, int $days): void
     {
         $totals = $query->selectRaw('
             COUNT(*) as total_runs,
@@ -87,25 +94,27 @@ final class AIStatsCommand extends Command
         $this->table(
             headers: ['Metric', 'Value'],
             rows: [
-                ['Total runs',           number_format((int) $totals->total_runs)],
-                ['Keys submitted',        number_format((int) $totals->total_keys)],
-                ['Keys translated',       number_format((int) $totals->total_translated)],
-                ['Keys failed',           number_format((int) $totals->total_failed)],
-                ['Input tokens used',     number_format((int) $totals->total_input_tokens)],
-                ['Output tokens used',    number_format((int) $totals->total_output_tokens)],
-                ['Total tokens',          number_format((int) ($totals->total_input_tokens + $totals->total_output_tokens))],
-                ['Actual cost (USD)',      '$'.number_format((float) $totals->total_cost, 4)],
-                ['Estimated cost (USD)',   '$'.number_format((float) $totals->total_estimated, 4)],
-                ['Cost variance',         $variantLabel],
-                ['Avg. duration',         round((float) $totals->avg_duration_ms).'ms'],
+                ['Total runs',          number_format((int) $totals->total_runs)],
+                ['Keys submitted',       number_format((int) $totals->total_keys)],
+                ['Keys translated',      number_format((int) $totals->total_translated)],
+                ['Keys failed',          number_format((int) $totals->total_failed)],
+                ['Input tokens used',    number_format((int) $totals->total_input_tokens)],
+                ['Output tokens used',   number_format((int) $totals->total_output_tokens)],
+                ['Total tokens',         number_format((int) ($totals->total_input_tokens + $totals->total_output_tokens))],
+                ['Actual cost (USD)',     '$'.number_format((float) $totals->total_cost, 4)],
+                ['Estimated cost (USD)',  '$'.number_format((float) $totals->total_estimated, 4)],
+                ['Cost variance',        $variantLabel],
+                ['Avg. duration',        round((float) $totals->avg_duration_ms).'ms'],
             ],
         );
     }
 
     /**
      * Display a breakdown of usage and cost per AI provider.
+     *
+     * @param  Builder<AITranslationLog>  $query
      */
-    private function displayByProvider(mixed $query): void
+    private function displayByProvider(Builder $query): void
     {
         $byProvider = $query->selectRaw('
             provider,
@@ -139,8 +148,10 @@ final class AIStatsCommand extends Command
 
     /**
      * Display a breakdown of usage and cost per target language.
+     *
+     * @param  Builder<AITranslationLog>  $query
      */
-    private function displayByLanguage(mixed $query): void
+    private function displayByLanguage(Builder $query): void
     {
         $byLanguage = $query->selectRaw('
             target_language,

@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Syriable\Translator\AI\Prompts;
 
 use Syriable\Translator\DTOs\AI\TranslationRequest;
+use Syriable\Translator\Models\Language;
+use Syriable\Translator\Models\Translation;
+use Syriable\Translator\Support\PluralFormProvider;
 
 /**
  * Builds structured prompts for AI translation providers.
@@ -18,6 +21,24 @@ use Syriable\Translator\DTOs\AI\TranslationRequest;
  * The prompt is split into a system message (persistent rules) and a user
  * message (request-specific content), matching the message-role API pattern
  * used by Claude, GPT-4, and Gemini.
+ *
+ * ### Translation Memory
+ *
+ * When `translator.ai.translation_memory.enabled` is true (default), the system
+ * prompt includes a `<translation_memory>` block populated with up to
+ * `translator.ai.translation_memory.limit` previously reviewed translations for
+ * the target language. This enforces terminology consistency across batches and
+ * across AI translation runs.
+ *
+ * Memory is sourced exclusively from `Reviewed` status translations — values
+ * that have been explicitly approved — to prevent propagating unreviewed errors.
+ *
+ * ### Plural Form Awareness
+ *
+ * The plural rule in the system prompt is enriched with the exact number of
+ * pipe-delimited forms required by the target language, derived from Unicode
+ * CLDR data via PluralFormProvider. This prevents the common LLM failure of
+ * producing two-variant output for a language that requires three, four, or six.
  */
 final class TranslationPromptBuilder
 {
@@ -28,11 +49,16 @@ final class TranslationPromptBuilder
      * behaviour. It instructs the model on placeholder preservation, plural
      * handling, consistency requirements, and output format.
      *
+     * When translation memory is available for the target language, a
+     * `<translation_memory>` section is appended to reinforce terminology
+     * consistency with already-reviewed translations.
+     *
      * @param  TranslationRequest  $request  The request for which to build the system prompt.
      */
     public function buildSystemPrompt(TranslationRequest $request): string
     {
-        $existingTranslations = $this->renderExistingTranslationContext();
+        $pluralRule = $this->buildPluralRule($request);
+        $translationMemory = $this->renderTranslationMemory($request);
 
         return <<<PROMPT
         You are a professional software localisation engineer specialising in Laravel PHP applications.
@@ -47,14 +73,7 @@ final class TranslationPromptBuilder
                 - URLs and email addresses
             </rule>
 
-            <rule id="plurals">
-                Laravel uses pipe syntax for plurals: "one item|many items" or "{1} item|[2,*] items".
-                When translating plural strings:
-                - Preserve the pipe (|) delimiter
-                - Maintain the same number of pipe-separated variants as the source
-                - Apply grammatically correct plural forms for {$request->targetLanguage}
-                - Never add or remove pipe variants
-            </rule>
+            {$pluralRule}
 
             <rule id="consistency">
                 Maintain terminology consistency:
@@ -80,7 +99,7 @@ final class TranslationPromptBuilder
             </rule>
         </rules>
 
-        {$existingTranslations}
+        {$translationMemory}
         PROMPT;
     }
 
@@ -130,18 +149,129 @@ final class TranslationPromptBuilder
             + mb_strlen($this->buildUserMessage($request));
     }
 
+    // -------------------------------------------------------------------------
+    // Plural form rule
+    // -------------------------------------------------------------------------
+
     /**
-     * Render existing translation context for the system prompt when a
-     * translation memory is available.
+     * Build a plural rule XML block enriched with per-locale CLDR form counts.
      *
-     * Returns an empty string when no context is configured, keeping the
-     * prompt lean for first-time translations.
+     * Injects the exact number of pipe-delimited variants the target language
+     * requires, along with their standard CLDR category names. This prevents
+     * the common AI failure of producing two-variant output for a language that
+     * requires three, four, five, or six forms (e.g. Arabic, Russian, Polish).
+     *
+     * For single-form languages (e.g. Japanese, Chinese), the rule explicitly
+     * instructs the model not to use pipe separators at all.
      */
-    private function renderExistingTranslationContext(): string
+    private function buildPluralRule(TranslationRequest $request): string
     {
-        // Translation memory integration is a future extension point.
-        // When implemented, this method will query the TranslationMemory
-        // service and render relevant prior translations as context.
-        return '';
+        $formCount = PluralFormProvider::formCount($request->targetLanguage);
+        $language = $this->resolveLanguageName($request->targetLanguage);
+        $formDescription = PluralFormProvider::describe($request->targetLanguage, $language);
+
+        if ($formCount === 1) {
+            return <<<RULE
+            <rule id="plurals">
+                {$formDescription}
+                Source strings may contain pipe syntax — when translating into {$request->targetLanguage},
+                collapse all pipe-separated variants into a single string with no pipes.
+            </rule>
+            RULE;
+        }
+
+        $formNames = implode(' | ', PluralFormProvider::formNames($request->targetLanguage));
+        $examplePipes = implode('|', array_fill(0, $formCount, '...'));
+
+        return <<<RULE
+        <rule id="plurals">
+            Laravel uses pipe syntax for plurals: "one item|many items" or "{1} item|[2,*] items".
+            {$formDescription}
+            When translating plural strings:
+            - The translated value MUST contain exactly {$formCount} pipe-separated variants: {$formNames}
+            - Format: {$examplePipes}
+            - Never produce fewer or more than {$formCount} variants for {$request->targetLanguage}
+            - Apply grammatically correct plural forms for each category
+            - Never add or remove pipe variants relative to this requirement
+        </rule>
+        RULE;
+    }
+
+    /**
+     * Resolve a human-readable language name from its BCP 47 code.
+     *
+     * Falls back to the code itself when no name is registered.
+     */
+    private function resolveLanguageName(string $localeCode): string
+    {
+        $language = Language::query()->where('code', $localeCode)->value('name');
+
+        return $language ?? $localeCode;
+    }
+
+    // -------------------------------------------------------------------------
+    // Translation memory
+    // -------------------------------------------------------------------------
+
+    /**
+     * Build the `<translation_memory>` section for the system prompt.
+     *
+     * Queries up to `translator.ai.translation_memory.limit` reviewed
+     * translations for the target language and formats them as a JSON reference
+     * block. Returns an empty string when:
+     *  - Translation memory is disabled in config.
+     *  - No reviewed translations exist for the target language.
+     *  - The target language is not found in the database.
+     *
+     * Only application-level translations (no vendor namespace) are included,
+     * and only those with a non-null, non-empty value.
+     *
+     * Source: `Reviewed` status only — never `Translated`, to avoid propagating
+     * unreviewed AI output back into future AI prompts.
+     */
+    private function renderTranslationMemory(TranslationRequest $request): string
+    {
+        if (! config('translator.ai.translation_memory.enabled', true)) {
+            return '';
+        }
+
+        $limit = max(1, (int) config('translator.ai.translation_memory.limit', 20));
+
+        $language = Language::query()
+            ->where('code', $request->targetLanguage)
+            ->first();
+
+        if ($language === null) {
+            return '';
+        }
+
+        $examples = Translation::query()
+            ->reviewed()
+            ->where('language_id', $language->id)
+            ->whereNotNull('value')
+            ->whereHas('translationKey.group', static fn ($q) => $q->whereNull('namespace'))
+            ->with('translationKey')
+            ->limit($limit)
+            ->get()
+            ->filter(static fn (Translation $t): bool => $t->translationKey !== null && filled($t->value))
+            ->mapWithKeys(static fn (Translation $t): array => [
+                $t->translationKey->key => $t->value,
+            ]);
+
+        if ($examples->isEmpty()) {
+            return '';
+        }
+
+        $json = json_encode($examples->all(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+
+        return <<<MEMORY
+
+        <translation_memory>
+            The following strings have been reviewed and approved for {$request->targetLanguage}.
+            When you encounter these keys in the current request, use these exact translations.
+            For other keys, use these as a reference for consistent terminology and tone.
+            {$json}
+        </translation_memory>
+        MEMORY;
     }
 }

@@ -10,6 +10,7 @@ use Syriable\Translator\DTOs\AI\TranslationEstimate;
 use Syriable\Translator\DTOs\AI\TranslationRequest;
 use Syriable\Translator\DTOs\AI\TranslationResponse;
 use Syriable\Translator\Enums\TranslationStatus;
+use Syriable\Translator\Events\AITranslationCompleted;
 use Syriable\Translator\Models\AITranslationLog;
 use Syriable\Translator\Models\Language;
 use Syriable\Translator\Models\Translation;
@@ -28,6 +29,7 @@ use Syriable\Translator\Models\TranslationKey;
  *  4. Cached keys are retrieved — NO API call for those keys.
  *  5. Remaining keys are sent to the provider API.
  *  6. ALL translations (cached + fresh) are persisted and logged.
+ *  7. AITranslationCompleted event is dispatched (when enabled in config).
  */
 final readonly class AITranslationService
 {
@@ -61,17 +63,15 @@ final readonly class AITranslationService
     // -------------------------------------------------------------------------
 
     /**
-     * Execute the translation request, persist results, and log the run.
+     * Execute the translation request, persist results, log the run, and
+     * dispatch the AITranslationCompleted event.
      *
      * Cache behaviour:
      *  - Keys found in cache are reused without an API call (zero token cost).
      *  - Keys NOT in cache are sent to the provider API.
      *  - ALL translated keys (cached + fresh) are persisted to the database.
      *  - A single AITranslationLog is recorded for the entire run.
-     *
-     * Fix: Previously, a full cache hit returned early and skipped both
-     * persistTranslations() and recordAILog(), leaving the database unchanged.
-     * Now persistence is always called regardless of the cache outcome.
+     *  - AITranslationCompleted is dispatched when the config flag is true.
      *
      * @param  TranslationRequest  $request  The translation request to execute.
      * @param  Language  $language  The target Language model record.
@@ -87,19 +87,15 @@ final readonly class AITranslationService
     ): TranslationResponse {
         [$cachedTranslations, $uncachedRequest] = $this->partitionCachedKeys($request);
 
-        // Determine the resolved provider name for logging.
         $resolvedProvider = $provider ?? $this->defaultProvider();
 
         if ($uncachedRequest->keyCount() === 0) {
             // ── Full cache hit ────────────────────────────────────────────────
-            // Build a zero-cost response from cache, then persist and log it.
-            $response = $this->buildCachedOnlyResponse(
-                $cachedTranslations,
-                $resolvedProvider,
-            );
+            $response = $this->buildCachedOnlyResponse($cachedTranslations, $resolvedProvider);
 
             $this->persistTranslations($response, $language);
-            $this->recordAILog($request, $response, $estimate, $resolvedProvider, source: 'cache');
+            $log = $this->recordAILog($request, $response, $estimate, $resolvedProvider, source: 'cache');
+            $this->dispatchCompletedEvent($log);
 
             return $response;
         }
@@ -109,14 +105,13 @@ final readonly class AITranslationService
             ->driver($provider)
             ->translate($uncachedRequest);
 
-        // Cache the fresh translations for future runs.
         $this->cacheTranslations($uncachedRequest, $apiResponse);
 
-        // Merge cached + fresh translations into one unified response.
         $mergedResponse = $this->mergeWithCached($apiResponse, $cachedTranslations, $request);
 
         $this->persistTranslations($mergedResponse, $language);
-        $this->recordAILog($request, $mergedResponse, $estimate, $resolvedProvider, source: 'api');
+        $log = $this->recordAILog($request, $mergedResponse, $estimate, $resolvedProvider, source: 'api');
+        $this->dispatchCompletedEvent($log);
 
         return $mergedResponse;
     }
@@ -127,13 +122,6 @@ final readonly class AITranslationService
 
     /**
      * Split the request into cached translations and an uncached sub-request.
-     *
-     * Returns a tuple of:
-     *  [0] array<string, string>   — Translations already in cache.
-     *  [1] TranslationRequest      — New request containing only uncached keys.
-     *
-     * When caching is disabled, all keys are returned as uncached.
-     *
      *
      * @return array{array<string, string>, TranslationRequest}
      */
@@ -170,12 +158,6 @@ final readonly class AITranslationService
         return [$cached, $uncachedRequest];
     }
 
-    /**
-     * Build a deterministic cache key for a single translation.
-     *
-     * The source value is hashed so cached entries are automatically invalidated
-     * when the source string changes — preventing stale translations.
-     */
     private function buildCacheKey(string $targetLocale, string $key, string $sourceValue): string
     {
         $prefix = config('translator.ai.cache.prefix', 'translator_ai');
@@ -183,9 +165,6 @@ final readonly class AITranslationService
         return "{$prefix}:{$targetLocale}:{$key}:".md5($sourceValue);
     }
 
-    /**
-     * Store all successfully translated values in the cache for future reuse.
-     */
     private function cacheTranslations(TranslationRequest $request, TranslationResponse $response): void
     {
         if (! config('translator.ai.cache.enabled', true)) {
@@ -210,16 +189,10 @@ final readonly class AITranslationService
     }
 
     /**
-     * Build a zero-cost TranslationResponse from cache-only translations.
-     *
-     * Used when every key in the request was served from cache.
-     *
      * @param  array<string, string>  $cachedTranslations
      */
-    private function buildCachedOnlyResponse(
-        array $cachedTranslations,
-        string $provider,
-    ): TranslationResponse {
+    private function buildCachedOnlyResponse(array $cachedTranslations, string $provider): TranslationResponse
+    {
         return new TranslationResponse(
             provider: $provider,
             model: 'cache',
@@ -233,12 +206,6 @@ final readonly class AITranslationService
     }
 
     /**
-     * Merge an API response with cached translations into a single unified response.
-     *
-     * The merged response carries the actual token usage from the API call (not
-     * inflated by the cached keys) and correctly reports failed keys from the
-     * uncached portion only.
-     *
      * @param  array<string, string>  $cachedTranslations
      */
     private function mergeWithCached(
@@ -248,7 +215,6 @@ final readonly class AITranslationService
     ): TranslationResponse {
         $allTranslations = array_merge($cachedTranslations, $apiResponse->translations);
 
-        // Failed keys are only those from the API portion that were not translated.
         $expectedApiKeys = array_diff(array_keys($originalRequest->keys), array_keys($cachedTranslations));
         $failedKeys = array_values(
             array_diff($expectedApiKeys, array_keys($apiResponse->translations)),
@@ -273,14 +239,11 @@ final readonly class AITranslationService
     /**
      * Persist translated values to Translation records in the database.
      *
-     * Looks up each TranslationKey by its dot-notation key string and updates
-     * the corresponding Translation row for the target language.
-     *
-     * Uses saveQuietly() to suppress model events during bulk AI updates,
-     * preventing observer overhead per individual row.
-     *
-     * Note: If the Translation row does not yet exist (e.g. replicator hasn't
-     * run), it is silently skipped. Run translator:import first to seed rows.
+     * Uses a bulk pre-load strategy to avoid N+1 queries:
+     *  - One query to load all matching TranslationKey records.
+     *  - One query to load all existing Translation rows for the target language.
+     *  - One bulk INSERT for all new rows.
+     *  - Individual saveQuietly() calls only for existing rows that need updating.
      */
     private function persistTranslations(TranslationResponse $response, Language $language): void
     {
@@ -290,13 +253,13 @@ final readonly class AITranslationService
 
         $keys = array_keys($response->translations);
 
-        // 1 query — bulk load all matching TranslationKey records
+        // Bulk load all matching TranslationKey records — 1 query.
         $keyModels = TranslationKey::query()
             ->whereIn('key', $keys)
             ->get()
             ->keyBy('key');
 
-        // 1 query — bulk load all existing Translation rows for this language
+        // Bulk load all existing Translation rows for this language — 1 query.
         $existingTranslations = Translation::query()
             ->whereIn('translation_key_id', $keyModels->pluck('id'))
             ->where('language_id', $language->id)
@@ -320,24 +283,25 @@ final readonly class AITranslationService
             $existing = $existingTranslations->get($keyModel->id);
 
             if ($existing === null) {
+                // Queue for bulk insert.
                 $toInsert[] = [
                     'translation_key_id' => $keyModel->id,
-                    'language_id' => $language->id,
-                    'value' => $translatedValue,
-                    'status' => TranslationStatus::Translated->value,
-                    'created_at' => $now,
-                    'updated_at' => $now,
+                    'language_id'        => $language->id,
+                    'value'              => $translatedValue,
+                    'status'             => TranslationStatus::Translated->value,
+                    'created_at'         => $now,
+                    'updated_at'         => $now,
                 ];
             } else {
                 $existing->fill([
-                    'value' => $translatedValue,
+                    'value'  => $translatedValue,
                     'status' => TranslationStatus::Translated,
                 ])->saveQuietly();
             }
         }
 
+        // Single bulk insert for all new rows — 1 query.
         if (! empty($toInsert)) {
-            // 1 bulk insert for all new rows
             Translation::query()->insert($toInsert);
         }
     }
@@ -349,14 +313,7 @@ final readonly class AITranslationService
     /**
      * Record the outcome of a translation execution to AITranslationLog.
      *
-     * Called for both cache hits and API calls, enabling cost variance analysis
-     * and cache effectiveness tracking over time.
-     *
-     * @param  TranslationRequest  $request  Original request metadata.
-     * @param  TranslationResponse  $response  Execution result.
-     * @param  TranslationEstimate|null  $estimate  Pre-execution estimate, if available.
-     * @param  string  $provider  Resolved provider name.
-     * @param  string  $source  Execution source: 'api' or 'cache'.
+     * Returns the persisted log record so it can be passed to the event.
      */
     private function recordAILog(
         TranslationRequest $request,
@@ -364,29 +321,37 @@ final readonly class AITranslationService
         ?TranslationEstimate $estimate,
         string $provider,
         string $source = 'api',
-    ): void {
-        AITranslationLog::query()->create([
-            'provider' => $provider,
-            'model' => $response->model,
-            'source_language' => $request->sourceLanguage,
-            'target_language' => $request->targetLanguage,
-            'group_name' => $request->groupName,
-            'key_count' => $request->keyCount(),
-            'translated_count' => $response->translatedCount(),
-            'failed_count' => count($response->failedKeys),
+    ): AITranslationLog {
+        /** @var AITranslationLog */
+        return AITranslationLog::query()->create([
+            'provider'          => $provider,
+            'model'             => $response->model,
+            'source_language'   => $request->sourceLanguage,
+            'target_language'   => $request->targetLanguage,
+            'group_name'        => $request->groupName,
+            'key_count'         => $request->keyCount(),
+            'translated_count'  => $response->translatedCount(),
+            'failed_count'      => count($response->failedKeys),
             'input_tokens_used' => $response->inputTokensUsed,
-            'output_tokens_used' => $response->outputTokensUsed,
-            'actual_cost_usd' => $response->actualCostUsd,
-            'estimated_cost_usd' => $estimate?->estimatedCostUsd ?? 0.0,
-            'duration_ms' => $response->durationMs,
-            'source' => $source,
-            'failed_keys' => $response->failedKeys ?: null,
+            'output_tokens_used'=> $response->outputTokensUsed,
+            'actual_cost_usd'   => $response->actualCostUsd,
+            'estimated_cost_usd'=> $estimate?->estimatedCostUsd ?? 0.0,
+            'duration_ms'       => $response->durationMs,
+            'source'            => $source,
+            'failed_keys'       => $response->failedKeys ?: null,
         ]);
     }
 
     /**
-     * Resolve the default provider name from configuration.
+     * Dispatch the AITranslationCompleted event when enabled in config.
      */
+    private function dispatchCompletedEvent(AITranslationLog $log): void
+    {
+        if (config('translator.events.ai_translation_completed', true)) {
+            AITranslationCompleted::dispatch($log);
+        }
+    }
+
     private function defaultProvider(): string
     {
         return (string) config('translator.ai.default_provider', 'claude');

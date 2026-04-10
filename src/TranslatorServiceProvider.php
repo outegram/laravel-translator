@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace Syriable\Translator;
 
+use Illuminate\Console\Scheduling\Schedule;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use Syriable\Translator\AI\Estimators\TokenEstimator;
 use Syriable\Translator\AI\Prompts\TranslationPromptBuilder;
 use Syriable\Translator\AI\TranslationProviderManager;
 use Syriable\Translator\Console\Commands;
+use Syriable\Translator\Contracts\AITranslationServiceContract;
+use Syriable\Translator\Contracts\TranslationExporterContract;
+use Syriable\Translator\Contracts\TranslationImporterContract;
 use Syriable\Translator\Services\AI\AITranslationService;
 use Syriable\Translator\Services\Exporter\JsonFileWriter;
 use Syriable\Translator\Services\Exporter\PhpFileWriter;
@@ -29,11 +33,6 @@ class TranslatorServiceProvider extends PackageServiceProvider
 {
     public function configurePackage(Package $package): void
     {
-        /*
-         * This class is a Package Service Provider
-         *
-         * More info: https://github.com/spatie/laravel-package-tools
-         */
         $package
             ->name('laravel-translator')
             ->hasConfigFile()
@@ -46,6 +45,7 @@ class TranslatorServiceProvider extends PackageServiceProvider
                 Commands\AIStatsCommand::class,
                 Commands\QueueDiagnosticCommand::class,
                 Commands\ScanCommand::class,
+                Commands\PruneLogsCommand::class,
             ]);
     }
 
@@ -55,15 +55,18 @@ class TranslatorServiceProvider extends PackageServiceProvider
         $this->registerExporterServices();
         $this->registerAiServices();
         $this->registerScannerServices();
+        $this->registerContracts();
+    }
+
+    public function packageBooted(): void
+    {
+        $this->registerSchedule();
     }
 
     // -------------------------------------------------------------------------
     // Service Registrations
     // -------------------------------------------------------------------------
 
-    /**
-     * Register the import pipeline as a singleton.
-     */
     private function registerImporterServices(): void
     {
         $this->app->singleton(
@@ -79,9 +82,6 @@ class TranslatorServiceProvider extends PackageServiceProvider
         );
     }
 
-    /**
-     * Register the export pipeline as a singleton.
-     */
     private function registerExporterServices(): void
     {
         $this->app->singleton(
@@ -94,13 +94,11 @@ class TranslatorServiceProvider extends PackageServiceProvider
     }
 
     /**
-     * Register AI translation services and the provider manager.
+     * The TranslationProviderManager and AITranslationService are singletons so
+     * resolved driver instances are cached across service calls in one request.
      *
-     * The TranslationProviderManager is a singleton so that resolved driver
-     * instances are cached across multiple service calls within one request.
-     *
-     * AITranslationService is also a singleton to share the provider manager
-     * instance rather than constructing a new one per injection.
+     * The facade accessor (`translator`) is bound here so that Translator::estimate()
+     * and Translator::translate() resolve to the same singleton instance.
      */
     private function registerAiServices(): void
     {
@@ -118,17 +116,10 @@ class TranslatorServiceProvider extends PackageServiceProvider
                 providerManager: $app->make(TranslationProviderManager::class),
             ),
         );
+
+        $this->app->alias(AITranslationService::class, 'translator');
     }
 
-    /**
-     * Register the scanner pipeline as a singleton.
-     *
-     * FileWalker and TranslationUsageExtractor are stateless — they hold no
-     * mutable state and are safe to share as singletons across the request.
-     *
-     * TranslationKeyScanner is also a singleton so the FileWalker instance
-     * is not reconstructed on every injection.
-     */
     private function registerScannerServices(): void
     {
         $this->app->singleton(FileWalker::class);
@@ -140,6 +131,48 @@ class TranslatorServiceProvider extends PackageServiceProvider
                 walker: $app->make(FileWalker::class),
                 extractor: $app->make(TranslationUsageExtractor::class),
             ),
+        );
+    }
+
+    /**
+     * Bind public contracts to their concrete implementations.
+     *
+     * Companion packages should type-hint against these contracts rather than
+     * concrete classes. This keeps the companion decoupled from implementation
+     * details and allows the underlying service to be swapped or extended.
+     */
+    private function registerContracts(): void
+    {
+        $this->app->bind(TranslationImporterContract::class, TranslationImporter::class);
+        $this->app->bind(TranslationExporterContract::class, TranslationExporter::class);
+        $this->app->bind(AITranslationServiceContract::class, AITranslationService::class);
+    }
+
+    // -------------------------------------------------------------------------
+    // Scheduler
+    // -------------------------------------------------------------------------
+
+    /**
+     * Register translator:prune-logs with the Laravel scheduler.
+     *
+     * Runs weekly when log_retention_days > 0. Consumers can override the
+     * schedule by adding their own definition in routes/console.php. Set
+     * TRANSLATOR_LOG_RETENTION_DAYS=0 to disable automatic pruning.
+     */
+    private function registerSchedule(): void
+    {
+        if ((int) config('translator.log_retention_days', 90) <= 0) {
+            return;
+        }
+
+        $this->callAfterResolving(
+            Schedule::class,
+            static function (Schedule $schedule): void {
+                $schedule->command('translator:prune-logs')
+                    ->weekly()
+                    ->withoutOverlapping()
+                    ->runInBackground();
+            },
         );
     }
 }
