@@ -22,11 +22,11 @@ namespace Syriable\Translator\DTOs;
 final readonly class ScanResult
 {
     /**
-     * @param  string[]  $usedKeys      All unique keys found in source files.
-     * @param  string[]  $missingKeys   Keys in code but absent from the database.
+     * @param  string[]  $usedKeys  All unique keys found in source files.
+     * @param  string[]  $missingKeys  Keys in code but absent from the database.
      * @param  string[]  $orphanedKeys  Keys in the database but absent from code.
-     * @param  int  $fileCount     Number of source files scanned.
-     * @param  int  $durationMs   Wall-clock time of the scan in milliseconds.
+     * @param  int  $fileCount  Number of source files scanned.
+     * @param  int  $durationMs  Wall-clock time of the scan in milliseconds.
      */
     public function __construct(
         public array $usedKeys,

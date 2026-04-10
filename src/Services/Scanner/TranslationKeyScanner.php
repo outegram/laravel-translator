@@ -24,8 +24,8 @@ use Syriable\Translator\Models\TranslationKey;
  *  - ignore_paths   — path segments to skip (e.g. 'vendor', 'node_modules').
  *  - extensions     — file extensions to include (e.g. 'php', 'blade.php', 'vue').
  *
- * @see \Syriable\Translator\Services\Scanner\TranslationUsageExtractor
- * @see \Syriable\Translator\DTOs\ScanResult
+ * @see TranslationUsageExtractor
+ * @see ScanResult
  */
 final readonly class TranslationKeyScanner
 {
@@ -80,7 +80,7 @@ final readonly class TranslationKeyScanner
      * Walk all configured source directories and collect every unique
      * translation key found across all qualifying files.
      *
-     * @return array{string[], int}  Tuple of [unique sorted keys, file count].
+     * @return array{string[], int} Tuple of [unique sorted keys, file count].
      */
     private function resolveCodeKeys(): array
     {
@@ -181,7 +181,7 @@ final readonly class TranslationKeyScanner
      *     (a new PHP group will be created during --sync).
      *
      * @param  string  $qualifiedKey  The fully-qualified key as found in source code.
-     * @return array{string, string}  Tuple of [group_name, translation_key].
+     * @return array{string, string} Tuple of [group_name, translation_key].
      */
     public function parseKeyComponents(string $qualifiedKey): array
     {

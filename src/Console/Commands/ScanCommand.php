@@ -12,6 +12,7 @@ use Syriable\Translator\Models\Group;
 use Syriable\Translator\Models\TranslationKey;
 use Syriable\Translator\Services\Scanner\TranslationKeyScanner;
 use Syriable\Translator\Services\TranslationKeyReplicator;
+use Throwable;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
@@ -226,7 +227,7 @@ final class ScanCommand extends Command
             }
 
             DB::commit();
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             DB::rollBack();
             error('Sync failed: '.$e->getMessage());
 
@@ -347,7 +348,7 @@ final class ScanCommand extends Command
             }
 
             DB::commit();
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             DB::rollBack();
             error('Purge failed: '.$e->getMessage());
 

@@ -15,6 +15,7 @@ use Syriable\Translator\DTOs\ScannedFile;
  *     __('key'), __("key")
  *     trans('key'), trans("key")
  *     trans_choice('key', $n), trans_choice("key", $n)
+ *
  *     @lang('key'), @lang("key")
  *     Lang::get('key'), Lang::get("key")
  *     Lang::choice('key', $n), Lang::has('key'), Lang::getFromJson('key')
@@ -116,7 +117,7 @@ final class TranslationUsageExtractor
      * Applies the appropriate pattern set based on the file extension.
      * Returns a deduplicated, sorted array of key strings.
      *
-     * @param  string  $content    Raw file content.
+     * @param  string  $content  Raw file content.
      * @param  string  $extension  Lowercase file extension without leading dot.
      * @return string[] Unique translation keys extracted.
      */
