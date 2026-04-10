@@ -284,40 +284,61 @@ final readonly class AITranslationService
      */
     private function persistTranslations(TranslationResponse $response, Language $language): void
     {
+        if (empty($response->translations)) {
+            return;
+        }
+    
+        $keys = array_keys($response->translations);
+    
+        // 1 query — bulk load all matching TranslationKey records
+        $keyModels = TranslationKey::query()
+            ->whereIn('key', $keys)
+            ->get()
+            ->keyBy('key');
+    
+        // 1 query — bulk load all existing Translation rows for this language
+        $existingTranslations = Translation::query()
+            ->whereIn('translation_key_id', $keyModels->pluck('id'))
+            ->where('language_id', $language->id)
+            ->get()
+            ->keyBy('translation_key_id');
+    
+        $toInsert = [];
+        $now = now();
+    
         foreach ($response->translations as $dotKey => $translatedValue) {
             if (! filled($translatedValue)) {
                 continue;
             }
-
-            $translationKey = TranslationKey::query()
-                ->where('key', $dotKey)
-                ->first();
-
-            if ($translationKey === null) {
+    
+            $keyModel = $keyModels->get($dotKey);
+    
+            if ($keyModel === null) {
                 continue;
             }
-
-            $translation = Translation::query()
-                ->where('translation_key_id', $translationKey->id)
-                ->where('language_id', $language->id)
-                ->first();
-
-            if ($translation === null) {
-                // Row doesn't exist yet — create it directly.
-                Translation::create([
-                    'translation_key_id' => $translationKey->id,
-                    'language_id' => $language->id,
-                    'value' => $translatedValue,
+    
+            $existing = $existingTranslations->get($keyModel->id);
+    
+            if ($existing === null) {
+                $toInsert[] = [
+                    'translation_key_id' => $keyModel->id,
+                    'language_id'        => $language->id,
+                    'value'              => $translatedValue,
+                    'status'             => TranslationStatus::Translated->value,
+                    'created_at'         => $now,
+                    'updated_at'         => $now,
+                ];
+            } else {
+                $existing->fill([
+                    'value'  => $translatedValue,
                     'status' => TranslationStatus::Translated,
-                ]);
-
-                continue;
+                ])->saveQuietly();
             }
-
-            $translation->fill([
-                'value' => $translatedValue,
-                'status' => TranslationStatus::Translated,
-            ])->saveQuietly();
+        }
+    
+        if (! empty($toInsert)) {
+            // 1 bulk insert for all new rows
+            Translation::query()->insert($toInsert);
         }
     }
 

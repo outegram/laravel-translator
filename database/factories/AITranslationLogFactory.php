@@ -24,7 +24,7 @@ final class AITranslationLogFactory extends Factory
 
         return [
             'provider' => $this->faker->randomElement(['claude', 'chatgpt']),
-            'model' => 'claude-sonnet-4-6',
+            'model' => 'claude-haiku-4-5-20251001',
             'source_language' => 'en',
             'target_language' => $this->faker->languageCode(),
             'group_name' => $this->faker->word(),

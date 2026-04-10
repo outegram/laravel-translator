@@ -116,7 +116,13 @@ final class FileWalker
     {
         $normalizedPath = str_replace('\\', '/', $absolutePath);
 
-        return array_any($ignoredSegments, fn ($segment) => str_contains($normalizedPath, '/'.$segment.'/'));
+        foreach ($ignoredSegments as $segment) {
+            if (str_contains($normalizedPath, '/'.$segment.'/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -134,7 +140,13 @@ final class FileWalker
 
         $normalizedPath = str_replace('\\', '/', $absolutePath);
 
-        return array_any($allowedExtensions, fn ($extension) => str_ends_with($normalizedPath, '.'.ltrim((string) $extension, '.')));
+        foreach ($allowedExtensions as $extension) {
+            if (str_ends_with($normalizedPath, '.'.ltrim((string) $extension, '.'))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

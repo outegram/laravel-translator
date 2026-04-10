@@ -40,7 +40,7 @@ A production-ready Laravel translation management package that imports, exports,
 
 | Requirement | Version |
 | ----------- | ------- |
-| PHP         | >= 8.2  |
+| PHP         | >= 8.3  |
 | Laravel     | >= 11.0 |
 
 ---
@@ -621,7 +621,7 @@ Change the model inside `config/translator.php` or via `.env`:
 
 ```env
 # Use a different Claude model
-ANTHROPIC_MODEL=claude-opus-4-6
+ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 
 # Use a different OpenAI model
 OPENAI_MODEL=gpt-4-turbo
@@ -631,7 +631,7 @@ Update pricing to match the new model:
 
 ```php
 'claude' => [
-    'model'                     => env('ANTHROPIC_MODEL', 'claude-opus-4-6'),
+    'model'                     => env('ANTHROPIC_MODEL', 'claude-haiku-4-5-20251001'),
     'input_cost_per_1k_tokens'  => 0.015,   // Opus is more expensive
     'output_cost_per_1k_tokens' => 0.075,
 ],

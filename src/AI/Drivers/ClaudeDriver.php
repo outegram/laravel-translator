@@ -352,7 +352,7 @@ final readonly class ClaudeDriver implements TranslationProviderInterface
     {
         return (string) config(
             'translator.ai.providers.claude.model',
-            'claude-opus-4-6',
+            'claude-haiku-4-5-20251001',
         );
     }
 

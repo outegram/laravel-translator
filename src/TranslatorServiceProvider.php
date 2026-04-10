@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Syriable\Translator;
 
 use Spatie\LaravelPackageTools\Package;
@@ -20,7 +22,7 @@ use Syriable\Translator\Services\Importer\TranslationImporter;
 use Syriable\Translator\Services\Importer\TranslationStringAnalyzer;
 use Syriable\Translator\Services\TranslationKeyReplicator;
 
-class TranslatorServiceProvider extends PackageServiceProvider
+final class TranslatorServiceProvider extends PackageServiceProvider
 {
     public function configurePackage(Package $package): void
     {
@@ -45,6 +47,7 @@ class TranslatorServiceProvider extends PackageServiceProvider
 
     public function packageRegistered()
     {
+        $this->app->alias(AITranslationService::class, 'translator');
         $this->registerImporterServices();
         $this->registerExporterServices();
         $this->registerAiServices();
