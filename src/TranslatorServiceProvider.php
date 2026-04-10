@@ -20,9 +20,12 @@ use Syriable\Translator\Services\Importer\PhpTranslationFileLoader;
 use Syriable\Translator\Services\Importer\TranslationDirectoryExplorer;
 use Syriable\Translator\Services\Importer\TranslationImporter;
 use Syriable\Translator\Services\Importer\TranslationStringAnalyzer;
+use Syriable\Translator\Services\Scanner\FileWalker;
+use Syriable\Translator\Services\Scanner\TranslationKeyScanner;
+use Syriable\Translator\Services\Scanner\TranslationUsageExtractor;
 use Syriable\Translator\Services\TranslationKeyReplicator;
 
-final class TranslatorServiceProvider extends PackageServiceProvider
+class TranslatorServiceProvider extends PackageServiceProvider
 {
     public function configurePackage(Package $package): void
     {
@@ -42,15 +45,16 @@ final class TranslatorServiceProvider extends PackageServiceProvider
                 Commands\AITranslateCommand::class,
                 Commands\AIStatsCommand::class,
                 Commands\QueueDiagnosticCommand::class,
+                Commands\ScanCommand::class,
             ]);
     }
 
-    public function packageRegistered()
+    public function packageRegistered(): void
     {
-        $this->app->alias(AITranslationService::class, 'translator');
         $this->registerImporterServices();
         $this->registerExporterServices();
         $this->registerAiServices();
+        $this->registerScannerServices();
     }
 
     // -------------------------------------------------------------------------
@@ -112,6 +116,29 @@ final class TranslatorServiceProvider extends PackageServiceProvider
             AITranslationService::class,
             static fn ($app): AITranslationService => new AITranslationService(
                 providerManager: $app->make(TranslationProviderManager::class),
+            ),
+        );
+    }
+
+    /**
+     * Register the scanner pipeline as a singleton.
+     *
+     * FileWalker and TranslationUsageExtractor are stateless — they hold no
+     * mutable state and are safe to share as singletons across the request.
+     *
+     * TranslationKeyScanner is also a singleton so the FileWalker instance
+     * is not reconstructed on every injection.
+     */
+    private function registerScannerServices(): void
+    {
+        $this->app->singleton(FileWalker::class);
+        $this->app->singleton(TranslationUsageExtractor::class);
+
+        $this->app->singleton(
+            TranslationKeyScanner::class,
+            static fn ($app): TranslationKeyScanner => new TranslationKeyScanner(
+                walker: $app->make(FileWalker::class),
+                extractor: $app->make(TranslationUsageExtractor::class),
             ),
         );
     }

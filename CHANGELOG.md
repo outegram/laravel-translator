@@ -2,6 +2,27 @@
 
 All notable changes to `syriable/laravel-translator` will be documented in this file.
 
+## v1.0.1 - 2026-04-10
+
+**Full Changelog**: https://github.com/outegram/laravel-translator/compare/v1.0.0...v1.0.1
+
+## [1.0.1] - 2026-04-10
+
+### Added
+
+- `translator:scan` Artisan command to find translation keys used in source (`__()`, `trans()`, etc.), report keys missing from the database or orphaned in the database, optionally sync missing keys or purge orphans, and support `--fail-on-missing` for CI.
+- `TranslationKeyScanner`, `TranslationUsageExtractor`, and `ScanResult` DTO backing the scan pipeline; configurable via `config('translator.scanner')`.
+- Feature and unit tests for the scan command and extractor.
+
+### Changed
+
+- README: expanded Artisan command documentation for `translator:scan` and related usage.
+- `TranslatorServiceProvider` registers scanner services (`FileWalker`, `TranslationUsageExtractor`, `TranslationKeyScanner`) as singletons.
+
+### Fixed
+
+- `FileWalker`: avoid `array_any()` so ignored paths and extensions work on PHP 8.3 (explicit loops; documented in PHPDoc).
+
 ## v1.0.0 - 2026-04-09
 
 **Full Changelog**: https://github.com/outegram/laravel-translator/commits/v1.0.0

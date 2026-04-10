@@ -110,6 +110,8 @@ final class FileWalker
      * Normalises to Unix-style separators before checking to ensure
      * cross-platform compatibility.
      *
+     * Uses explicit loops instead of array_any() (PHP 8.4+) for PHP 8.3 compatibility.
+     *
      * @param  string[]  $ignoredSegments
      */
     private function isIgnored(string $absolutePath, array $ignoredSegments): bool
@@ -129,6 +131,8 @@ final class FileWalker
      * Determine whether a file matches one of the allowed extensions.
      *
      * When no extensions are specified, all files are considered valid.
+     *
+     * Uses explicit loops instead of array_any() (PHP 8.4+) for PHP 8.3 compatibility.
      *
      * @param  string[]  $allowedExtensions
      */

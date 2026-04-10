@@ -14,6 +14,7 @@ A production-ready Laravel translation management package that imports, exports,
 - [Artisan Commands](#artisan-commands)
     - [translator:import](#translatorimport)
     - [translator:export](#translatorexport)
+    - [translator:scan](#translatorscan)
     - [translator:ai-translate](#translatorai-translate)
     - [translator:ai-stats](#translatorai-stats)
     - [translator:queue-check](#translatorqueue-check)
@@ -131,6 +132,27 @@ return [
         'require_approval' => env('TRANSLATOR_EXPORT_REQUIRE_APPROVAL', false),
     ],
 
+    // Controls which source files translator:scan walks.
+    'scanner' => [
+        'paths' => [
+            app_path(),
+            resource_path('views'),
+        ],
+        'ignore_paths' => [
+            'vendor',
+            'node_modules',
+            'storage',
+            '.git',
+        ],
+        'extensions' => [
+            'php',
+            'blade.php',
+            'js',
+            'ts',
+            'vue',
+        ],
+    ],
+
     'cache' => [
         'enabled' => env('TRANSLATOR_CACHE_ENABLED', true),
         'store'   => env('TRANSLATOR_CACHE_STORE', null),
@@ -152,27 +174,26 @@ return [
 
         'cache' => [
             'enabled' => env('TRANSLATOR_AI_CACHE_ENABLED', true),
-            'ttl'     => env('TRANSLATOR_AI_CACHE_TTL', 86400), // seconds
+            'ttl'     => env('TRANSLATOR_AI_CACHE_TTL', 86400),
             'prefix'  => env('TRANSLATOR_AI_CACHE_PREFIX', 'translator_ai'),
         ],
 
         'token_estimation' => [
-            'default_ratio'            => 4.0,  // Latin scripts
-            'dense_script_ratio'       => 2.0,  // Arabic, CJK, Indic
-            'default_expansion_factor' => 1.2,  // Expected output size vs input
+            'default_ratio'            => 4.0,
+            'dense_script_ratio'       => 2.0,
+            'default_expansion_factor' => 1.2,
         ],
 
         'providers' => [
             'claude' => [
                 'api_key'                   => env('ANTHROPIC_API_KEY'),
-                'model'                     => env('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
+                'model'                     => env('ANTHROPIC_MODEL', 'claude-haiku-4-5-20251001'),
                 'max_tokens'                => env('ANTHROPIC_MAX_TOKENS', 4096),
                 'timeout_seconds'           => env('ANTHROPIC_TIMEOUT', 120),
                 'max_retries'               => env('ANTHROPIC_MAX_RETRIES', 3),
                 'input_cost_per_1k_tokens'  => 0.003,
                 'output_cost_per_1k_tokens' => 0.015,
             ],
-            // 'chatgpt' => [ ... ],
         ],
     ],
 ];
@@ -310,6 +331,169 @@ php artisan translator:export --locale=ar --group=auth
 
 ---
 
+### `translator:scan`
+
+Scans your application source files for translation key calls (`__()`, `trans()`, `@lang()`, etc.) and compares them against the `TranslationKey` records in the database. Reports two categories of divergence:
+
+- **Missing keys** — keys called in your code that have no database record. These will silently fall back to the key string at runtime.
+- **Orphaned keys** — keys in the database that are not referenced anywhere in your scanned source files. These may be safe to remove.
+
+> **Note:** Vendor-namespaced keys (e.g. `spatie::permissions`) are always excluded from the orphan report, since they are owned by external packages rather than your application code.
+
+```bash
+# Full report — shows both missing and orphaned keys
+php artisan translator:scan
+
+# Only show keys missing from the database
+php artisan translator:scan --missing-only
+
+# Only show orphaned database keys
+php artisan translator:scan --orphans-only
+
+# Exit with code 1 if any missing keys are found (for CI pipelines)
+php artisan translator:scan --fail-on-missing
+
+# Insert missing keys into the database as empty placeholder records
+php artisan translator:scan --sync
+
+# Remove orphaned keys from the database (requires confirmation)
+php artisan translator:scan --purge-orphans
+```
+
+**Options:**
+
+| Option              | Description                                                                                                |
+| ------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `--missing-only`    | Only report keys present in code but absent from the database                                              |
+| `--orphans-only`    | Only report keys present in the database but absent from code                                              |
+| `--fail-on-missing` | Exit with code 1 when missing keys are found (useful in CI/CD pipelines)                                   |
+| `--sync`            | Insert all missing keys into the database as empty `TranslationKey` records                                |
+| `--purge-orphans`   | Delete all orphaned `TranslationKey` records from the database (requires confirmation in interactive mode) |
+
+**Supported call forms:**
+
+The scanner recognises all standard Laravel translation call forms across PHP, Blade, JavaScript, TypeScript, and Vue files:
+
+| Call form             | Files                   |
+| --------------------- | ----------------------- |
+| `__('key')`           | PHP, Blade, JS, TS, Vue |
+| `trans('key')`        | PHP, Blade              |
+| `trans_choice('key')` | PHP, Blade              |
+| `@lang('key')`        | Blade                   |
+| `Lang::get('key')`    | PHP                     |
+| `Lang::choice('key')` | PHP                     |
+| `$t('key')`           | JS, TS, Vue             |
+| `i18n.t('key')`       | JS, TS                  |
+
+Keys that contain runtime values (e.g. `__("auth.$action")`) cannot be statically resolved and are silently skipped. This is correct behaviour — only literal string keys can be tracked.
+
+**Example output:**
+
+```
+🌐 Syriable Translator — Scan
+
+Scan completed in 340ms
+┌────────────────────┬───────┐
+│ Metric             │ Value │
+├────────────────────┼───────┤
+│ Files scanned      │ 87    │
+│ Keys found in code │ 312   │
+│ Missing from DB    │ 3     │
+│ Orphaned in DB     │ 8     │
+└────────────────────┴───────┘
+
+⚠️  Missing keys — present in code, absent from database:
+┌───┬──────────────────────────┐
+│ # │ Key                      │
+├───┼──────────────────────────┤
+│ 1 │ auth.account_suspended   │
+│ 2 │ checkout.payment_failed  │
+│ 3 │ notifications.new_order  │
+└───┴──────────────────────────┘
+  Tip: run translator:import to import from lang files,
+  or use --sync to create empty placeholder records.
+
+⚠️  Orphaned keys — present in database, absent from scanned code:
+┌───┬──────────────────────────┐
+│ # │ Key                      │
+├───┼──────────────────────────┤
+│ 1 │ auth.verify_old          │
+│ 2 │ emails.legacy_footer     │
+│   │ ...                      │
+└───┴──────────────────────────┘
+  Note: vendor packages and programmatically-built keys may appear orphaned.
+  Review carefully before using --purge-orphans.
+```
+
+**Configuring the scanner:**
+
+The directories, ignored paths, and file extensions the scanner walks are controlled by `config/translator.php` under the `scanner` key:
+
+```php
+'scanner' => [
+
+    // Directories to scan recursively.
+    'paths' => [
+        app_path(),
+        resource_path('views'),
+    ],
+
+    // Path segments to skip during the walk.
+    'ignore_paths' => [
+        'vendor',
+        'node_modules',
+        'storage',
+        '.git',
+    ],
+
+    // File extensions to include.
+    'extensions' => [
+        'php',
+        'blade.php',
+        'js',
+        'ts',
+        'vue',
+    ],
+
+],
+```
+
+You can extend `paths` to include additional directories such as `resource_path('js')` for Inertia.js projects, or restrict `extensions` to only `['php', 'blade.php']` if you have no JavaScript translation calls.
+
+**Using `--sync` to insert missing keys:**
+
+`--sync` inserts a `TranslationKey` record and replicates it to all active languages as `untranslated` rows. It does not populate the translated value — that step is done separately via `translator:import` (to pull values from lang files on disk) or `translator:ai-translate` (to AI-translate directly).
+
+For each missing key, the group is inferred from the first dot-segment of the key:
+
+- `auth.account_suspended` → group `auth`, key `account_suspended`
+- `checkout.payment_failed` → group `checkout`, key `payment_failed`
+- `Welcome` _(no dot)_ → group `_json`, key `Welcome`
+
+If the group does not yet exist in the database it is created automatically. If the key already exists (e.g. from a concurrent import), `--sync` is fully idempotent and skips it.
+
+**Using in CI/CD:**
+
+Add `translator:scan --fail-on-missing` as a step in your deployment pipeline to prevent releases that contain translation calls with no backing database record:
+
+```yaml
+# .github/workflows/deploy.yml
+- name: Check for missing translation keys
+  run: php artisan translator:scan --fail-on-missing
+```
+
+This exits with code 0 when all code keys have database records, and code 1 when any are missing, blocking the pipeline until the keys are added.
+
+**Using `--purge-orphans`:**
+
+`--purge-orphans` permanently removes `TranslationKey` records (and all their associated `Translation` rows via cascade) for keys that are not referenced in any scanned source file.
+
+In interactive mode you will be asked to confirm before anything is deleted. In non-interactive mode (e.g. CI), the purge proceeds without prompting when `--purge-orphans` is combined with `--no-interaction`.
+
+> **Review the orphan list carefully before purging.** Keys that are built dynamically at runtime (e.g. `__("status.$state")`) will not be found by the static scanner and will appear as orphaned even though they are in active use. The same applies to keys used exclusively in queued jobs, scheduled commands, or other processes not covered by your configured `scanner.paths`.
+
+---
+
 ### `translator:ai-translate`
 
 Translates all untranslated keys for a target language using an AI provider.
@@ -356,7 +540,7 @@ php artisan translator:ai-translate --target=ar --fresh-cache
 │ Metric               │ Value                │
 ├──────────────────────┼──────────────────────┤
 │ Provider             │ Claude               │
-│ Model                │ claude-sonnet-4-6    │
+│ Model                │ claude-haiku-4-5-20251001    │
 │ Keys to translate    │ 247                  │
 │ Source characters    │ 8,432                │
 │ Input tokens         │ 3,210                │
@@ -487,48 +671,12 @@ final class GeminiDriver implements TranslationProviderInterface
 
     public function estimate(TranslationRequest $request): TranslationEstimate
     {
-        $systemPrompt = $this->promptBuilder->buildSystemPrompt($request);
-        $userMessage  = $this->promptBuilder->buildUserMessage($request);
-
-        $inputTokens  = $this->estimator->estimateInputTokens(
-            prompt: $systemPrompt . $userMessage,
-            keys: $request->keys,
-            sourceLocale: $request->sourceLanguage,
-        );
-        $outputTokens = $this->estimator->estimateOutputTokens(
-            keys: $request->keys,
-            targetLocale: $request->targetLanguage,
-        );
-
-        return new TranslationEstimate(
-            provider: $this->providerName(),
-            model: $this->resolveModel(),
-            estimatedInputTokens: $inputTokens,
-            estimatedOutputTokens: $outputTokens,
-            estimatedCostUsd: $this->estimator->estimateCost($this->providerName(), $inputTokens, $outputTokens),
-            keyCount: $request->keyCount(),
-            sourceCharacters: $request->totalSourceCharacters(),
-        );
+        // Build prompt, calculate token counts, return estimate without API call.
     }
 
     public function translate(TranslationRequest $request): TranslationResponse
     {
         // Build prompt, call the Gemini API, parse JSON response.
-        // Return a TranslationResponse with the translated values.
-        $startTime = microtime(true);
-
-        // ... your HTTP call here ...
-
-        return new TranslationResponse(
-            provider: $this->providerName(),
-            model: $this->resolveModel(),
-            translations: $translatedKeys,   // array<string, string>
-            failedKeys: $failedKeys,          // string[]
-            inputTokensUsed: $inputTokens,
-            outputTokensUsed: $outputTokens,
-            actualCostUsd: $actualCost,
-            durationMs: (int) ((microtime(true) - $startTime) * 1000),
-        );
     }
 
     public function providerName(): string
@@ -539,11 +687,6 @@ final class GeminiDriver implements TranslationProviderInterface
     public function isAvailable(): bool
     {
         return filled(config('translator.ai.providers.gemini.api_key'));
-    }
-
-    private function resolveModel(): string
-    {
-        return config('translator.ai.providers.gemini.model', 'gemini-1.5-pro');
     }
 }
 ```
@@ -570,7 +713,6 @@ public function boot(): void
 **Step 3 — Add pricing to config:**
 
 ```php
-// config/translator.php
 'providers' => [
     'gemini' => [
         'api_key'                   => env('GEMINI_API_KEY'),
@@ -597,13 +739,8 @@ php artisan translator:ai-translate --target=ar --provider=gemini
 Change `TRANSLATOR_AI_PROVIDER` in `.env`:
 
 ```env
-# Use Claude (default)
 TRANSLATOR_AI_PROVIDER=claude
-
-# Use ChatGPT
 TRANSLATOR_AI_PROVIDER=chatgpt
-
-# Use your custom Gemini driver
 TRANSLATOR_AI_PROVIDER=gemini
 ```
 
@@ -615,32 +752,6 @@ php artisan translator:ai-translate --target=ar --provider=chatgpt
 
 ---
 
-### Switching or updating the AI model
-
-Change the model inside `config/translator.php` or via `.env`:
-
-```env
-# Use a different Claude model
-ANTHROPIC_MODEL=claude-haiku-4-5-20251001
-
-# Use a different OpenAI model
-OPENAI_MODEL=gpt-4-turbo
-```
-
-Update pricing to match the new model:
-
-```php
-'claude' => [
-    'model'                     => env('ANTHROPIC_MODEL', 'claude-haiku-4-5-20251001'),
-    'input_cost_per_1k_tokens'  => 0.015,   // Opus is more expensive
-    'output_cost_per_1k_tokens' => 0.075,
-],
-```
-
-> Always verify pricing against the provider's current documentation. The values in config are used only for **pre-execution estimates** shown to the user — actual cost is calculated from the token counts reported by the API after each call.
-
----
-
 ### Using the queue for large batches
 
 For large translation jobs (hundreds of keys), use `--queue` to avoid HTTP timeouts and run translations in the background.
@@ -648,17 +759,10 @@ For large translation jobs (hundreds of keys), use `--queue` to avoid HTTP timeo
 **Setup (one time):**
 
 ```bash
-# 1. Set queue driver in .env (must not be "sync")
 QUEUE_CONNECTION=database
-
-# 2. Create the jobs table
 php artisan queue:table
 php artisan migrate
-
-# 3. Clear config cache
 php artisan config:clear
-
-# 4. Verify everything is correct
 php artisan translator:queue-check
 ```
 
@@ -668,18 +772,11 @@ php artisan translator:queue-check
 php artisan translator:ai-translate --target=ar --queue
 ```
 
-**Start the worker (in a separate terminal or process manager):**
+**Start the worker:**
 
 ```bash
 php artisan queue:work --queue=default --tries=3
 ```
-
-**Important notes:**
-
-- Jobs are dispatched but **not processed** until a worker picks them up
-- Rate limit errors (`429`) automatically retry with exponential backoff (60s, 120s, 240s)
-- Each job handles one batch of up to `translator.ai.batch_size` keys (default: 50)
-- The `Language` model and `TranslationRequest` DTO are stored as plain primitives in the job to avoid PHP serialization issues with `readonly` properties
 
 ---
 
@@ -698,16 +795,8 @@ The MD5 of the source value means the cache is **automatically invalidated** whe
 **Configure the cache:**
 
 ```env
-# Enable/disable
 TRANSLATOR_AI_CACHE_ENABLED=true
-
-# TTL in seconds (default: 86400 = 24 hours)
 TRANSLATOR_AI_CACHE_TTL=86400
-
-# Set to 0 for indefinite storage
-TRANSLATOR_AI_CACHE_TTL=0
-
-# Use a specific cache store (redis, memcached, file, etc.)
 TRANSLATOR_AI_CACHE_STORE=redis
 ```
 
@@ -715,12 +804,6 @@ TRANSLATOR_AI_CACHE_STORE=redis
 
 ```bash
 php artisan translator:ai-translate --target=ar --fresh-cache
-```
-
-**Clear all AI translation cache:**
-
-```bash
-php artisan cache:clear
 ```
 
 ---
@@ -732,18 +815,12 @@ php artisan cache:clear
 ```php
 use Syriable\Translator\Models\Language;
 
-// All active languages
 Language::query()->active()->get();
-
-// The source language
 Language::query()->source()->first();
-
-// Right-to-left languages
 Language::query()->rtl()->get();
 
-// Domain methods
-$language->isRtl();    // bool
-$language->isSource(); // bool
+$language->isRtl();
+$language->isSource();
 ```
 
 ### `Group`
@@ -751,20 +828,14 @@ $language->isSource(); // bool
 ```php
 use Syriable\Translator\Models\Group;
 
-// Application groups only (no vendor namespace)
 Group::query()->application()->get();
-
-// Vendor groups
 Group::query()->vendor()->get();
-
-// Groups by file format
 Group::query()->withFormat('php')->get();
 Group::query()->withFormat('json')->get();
 
-// Domain methods
-$group->isVendor();        // bool
-$group->isJson();          // bool
-$group->qualifiedName();   // 'auth' or 'spatie::permissions'
+$group->isVendor();
+$group->isJson();
+$group->qualifiedName();
 ```
 
 ### `TranslationKey`
@@ -772,18 +843,12 @@ $group->qualifiedName();   // 'auth' or 'spatie::permissions'
 ```php
 use Syriable\Translator\Models\TranslationKey;
 
-// Keys that have interpolation parameters
 TranslationKey::query()->withParameters()->get();
-
-// Keys using plural pipe syntax
 TranslationKey::query()->plural()->get();
-
-// Keys containing HTML
 TranslationKey::query()->html()->get();
 
-// Domain methods
-$key->hasParameters();  // bool
-$key->parameterNames(); // [':name', '{count}']
+$key->hasParameters();
+$key->parameterNames();
 ```
 
 ### `Translation`
@@ -792,19 +857,15 @@ $key->parameterNames(); // [':name', '{count}']
 use Syriable\Translator\Models\Translation;
 use Syriable\Translator\Enums\TranslationStatus;
 
-// By status
 Translation::query()->untranslated()->get();
 Translation::query()->translated()->get();
 Translation::query()->reviewed()->get();
 Translation::query()->withStatus(TranslationStatus::Reviewed)->get();
+Translation::query()->source()->get();
+Translation::query()->forLocale('ar')->get();
 
-// By language
-Translation::query()->source()->get();       // Source language only
-Translation::query()->forLocale('ar')->get(); // Specific locale
-
-// Domain methods
-$translation->hasValue();  // bool
-$translation->isComplete(); // bool — true for Translated and Reviewed
+$translation->hasValue();
+$translation->isComplete();
 ```
 
 ### `AITranslationLog`
@@ -812,22 +873,16 @@ $translation->isComplete(); // bool — true for Translated and Reviewed
 ```php
 use Syriable\Translator\Models\AITranslationLog;
 
-// By provider
 AITranslationLog::query()->forProvider('claude')->get();
-
-// By language pair
 AITranslationLog::query()->forLanguagePair('en', 'ar')->get();
-
-// Runs with failures
 AITranslationLog::query()->withFailures()->get();
 
-// Domain methods
-$log->totalTokensUsed();        // int
-$log->formattedActualCost();    // '$0.0126'
-$log->formattedEstimatedCost(); // '$0.0120'
-$log->costVariancePercent();    // float — e.g. +5.0
-$log->successRate();            // float — e.g. 97.5
-$log->hadFailures();            // bool
+$log->totalTokensUsed();
+$log->formattedActualCost();
+$log->formattedEstimatedCost();
+$log->costVariancePercent();
+$log->successRate();
+$log->hadFailures();
 ```
 
 ---
@@ -840,10 +895,9 @@ Dispatched after every successful import run. Carries the `ImportLog` record.
 
 ```php
 use Syriable\Translator\Events\ImportCompleted;
-use Syriable\Translator\Models\ImportLog;
 
 Event::listen(ImportCompleted::class, function (ImportCompleted $event): void {
-    $log = $event->log; // ImportLog instance
+    $log = $event->log;
 
     logger()->info('Import finished', [
         'keys'     => $log->key_count,
@@ -854,11 +908,7 @@ Event::listen(ImportCompleted::class, function (ImportCompleted $event): void {
 });
 ```
 
-Disable this event in config:
-
-```php
-'events' => ['import_completed' => false],
-```
+Disable in config: `'events' => ['import_completed' => false]`
 
 ### `ExportCompleted`
 
@@ -868,7 +918,7 @@ Dispatched after every successful export run. Carries the `ExportLog` record.
 use Syriable\Translator\Events\ExportCompleted;
 
 Event::listen(ExportCompleted::class, function (ExportCompleted $event): void {
-    $log = $event->log; // ExportLog instance
+    $log = $event->log;
 
     logger()->info('Export finished', [
         'files'    => $log->file_count,
@@ -880,8 +930,6 @@ Event::listen(ExportCompleted::class, function (ExportCompleted $event): void {
 ---
 
 ## Validation Rules
-
-Two validation rules are included for use in forms that allow translators to edit translation values.
 
 ### `TranslationParametersRule`
 
@@ -899,7 +947,6 @@ Use the static helper to check for missing parameters programmatically:
 
 ```php
 $missing = TranslationParametersRule::missingParametersFor($translationKey, $submittedValue);
-// Returns e.g. [':name', '{count}'] — the tokens absent from the submitted value
 ```
 
 ### `TranslationPluralRule`
@@ -921,8 +968,6 @@ $request->validate([
 ### Custom models
 
 Override any model with your own subclass to add custom behaviour, relationships, observers, or casts without modifying package code.
-
-**Example — add a custom scope and observer to `Translation`:**
 
 ```php
 namespace App\Models;
@@ -953,7 +998,7 @@ Register it in `config/translator.php`:
 ],
 ```
 
-All package services — the importer, exporter, replicator, and AI translator — will resolve and use your custom class automatically.
+All package services — the importer, exporter, replicator, AI translator, and scanner — will resolve and use your custom class automatically.
 
 ### Custom table prefix
 
@@ -963,43 +1008,41 @@ Change the prefix before running migrations for the first time:
 TRANSLATOR_TABLE_PREFIX=mytrans_
 ```
 
-All seven package tables will be created with `mytrans_` instead of `ltu_`. The prefix is resolved at runtime via the `HasTranslatorTable` trait, so changing it in config immediately affects all model queries.
-
 > **Do not change the prefix after migrations have run.** You would need to rename tables manually.
 
 ---
 
 ## Environment Variable Reference
 
-| Variable                             | Default             | Description                           |
-| ------------------------------------ | ------------------- | ------------------------------------- |
-| `TRANSLATOR_SOURCE_LANGUAGE`         | `en`                | BCP 47 code of the source language    |
-| `TRANSLATOR_LANG_PATH`               | `null`              | Override the lang directory path      |
-| `TRANSLATOR_TABLE_PREFIX`            | `ltu_`              | Database table prefix                 |
-| `TRANSLATOR_IMPORT_OVERWRITE`        | `true`              | Overwrite existing values on import   |
-| `TRANSLATOR_SCAN_VENDOR`             | `true`              | Scan `lang/vendor` during import      |
-| `TRANSLATOR_DETECT_PARAMETERS`       | `true`              | Detect `:param` and `{param}` tokens  |
-| `TRANSLATOR_DETECT_HTML`             | `true`              | Detect inline HTML in source strings  |
-| `TRANSLATOR_DETECT_PLURAL`           | `true`              | Detect pipe plural syntax             |
-| `TRANSLATOR_CHUNK_SIZE`              | `500`               | Keys per DB chunk during replication  |
-| `TRANSLATOR_EXPORT_SORT_KEYS`        | `true`              | Sort keys alphabetically on export    |
-| `TRANSLATOR_EXPORT_REQUIRE_APPROVAL` | `false`             | Only export Reviewed translations     |
-| `TRANSLATOR_CACHE_ENABLED`           | `true`              | Enable translation output caching     |
-| `TRANSLATOR_CACHE_TTL`               | `3600`              | Cache TTL in seconds                  |
-| `TRANSLATOR_LOG_RETENTION_DAYS`      | `90`                | Days to retain import/export logs     |
-| `TRANSLATOR_EVENT_IMPORT_COMPLETED`  | `true`              | Dispatch `ImportCompleted` event      |
-| `TRANSLATOR_EVENT_EXPORT_COMPLETED`  | `true`              | Dispatch `ExportCompleted` event      |
-| `TRANSLATOR_AI_PROVIDER`             | `claude`            | Default AI provider                   |
-| `TRANSLATOR_AI_QUEUE`                | `default`           | Queue name for AI translation jobs    |
-| `TRANSLATOR_AI_BATCH_SIZE`           | `50`                | Max keys per API request              |
-| `TRANSLATOR_AI_CACHE_ENABLED`        | `true`              | Cache AI translation results          |
-| `TRANSLATOR_AI_CACHE_TTL`            | `86400`             | AI cache TTL in seconds (0 = forever) |
-| `ANTHROPIC_API_KEY`                  | —                   | Anthropic Claude API key              |
-| `ANTHROPIC_MODEL`                    | `claude-sonnet-4-6` | Claude model to use                   |
-| `ANTHROPIC_MAX_TOKENS`               | `4096`              | Max output tokens per request         |
-| `ANTHROPIC_TIMEOUT`                  | `120`               | Request timeout in seconds            |
-| `ANTHROPIC_MAX_RETRIES`              | `3`                 | Retries on transient failures         |
-| `OPENAI_API_KEY`                     | —                   | OpenAI API key (ChatGPT driver)       |
+| Variable                             | Default                     | Description                           |
+| ------------------------------------ | --------------------------- | ------------------------------------- |
+| `TRANSLATOR_SOURCE_LANGUAGE`         | `en`                        | BCP 47 code of the source language    |
+| `TRANSLATOR_LANG_PATH`               | `null`                      | Override the lang directory path      |
+| `TRANSLATOR_TABLE_PREFIX`            | `ltu_`                      | Database table prefix                 |
+| `TRANSLATOR_IMPORT_OVERWRITE`        | `true`                      | Overwrite existing values on import   |
+| `TRANSLATOR_SCAN_VENDOR`             | `true`                      | Scan `lang/vendor` during import      |
+| `TRANSLATOR_DETECT_PARAMETERS`       | `true`                      | Detect `:param` and `{param}` tokens  |
+| `TRANSLATOR_DETECT_HTML`             | `true`                      | Detect inline HTML in source strings  |
+| `TRANSLATOR_DETECT_PLURAL`           | `true`                      | Detect pipe plural syntax             |
+| `TRANSLATOR_CHUNK_SIZE`              | `500`                       | Keys per DB chunk during replication  |
+| `TRANSLATOR_EXPORT_SORT_KEYS`        | `true`                      | Sort keys alphabetically on export    |
+| `TRANSLATOR_EXPORT_REQUIRE_APPROVAL` | `false`                     | Only export Reviewed translations     |
+| `TRANSLATOR_CACHE_ENABLED`           | `true`                      | Enable translation output caching     |
+| `TRANSLATOR_CACHE_TTL`               | `3600`                      | Cache TTL in seconds                  |
+| `TRANSLATOR_LOG_RETENTION_DAYS`      | `90`                        | Days to retain import/export logs     |
+| `TRANSLATOR_EVENT_IMPORT_COMPLETED`  | `true`                      | Dispatch `ImportCompleted` event      |
+| `TRANSLATOR_EVENT_EXPORT_COMPLETED`  | `true`                      | Dispatch `ExportCompleted` event      |
+| `TRANSLATOR_AI_PROVIDER`             | `claude`                    | Default AI provider                   |
+| `TRANSLATOR_AI_QUEUE`                | `default`                   | Queue name for AI translation jobs    |
+| `TRANSLATOR_AI_BATCH_SIZE`           | `50`                        | Max keys per API request              |
+| `TRANSLATOR_AI_CACHE_ENABLED`        | `true`                      | Cache AI translation results          |
+| `TRANSLATOR_AI_CACHE_TTL`            | `86400`                     | AI cache TTL in seconds (0 = forever) |
+| `ANTHROPIC_API_KEY`                  | —                           | Anthropic Claude API key              |
+| `ANTHROPIC_MODEL`                    | `claude-haiku-4-5-20251001` | Claude model to use                   |
+| `ANTHROPIC_MAX_TOKENS`               | `4096`                      | Max output tokens per request         |
+| `ANTHROPIC_TIMEOUT`                  | `120`                       | Request timeout in seconds            |
+| `ANTHROPIC_MAX_RETRIES`              | `3`                         | Retries on transient failures         |
+| `OPENAI_API_KEY`                     | —                           | OpenAI API key (ChatGPT driver)       |
 
 ---
 
@@ -1007,23 +1050,17 @@ All seven package tables will be created with `mytrans_` instead of `ltu_`. The 
 
 ### `$0.0000` actual cost — nothing saved to database
 
-The AI cache was hit from a previous run. Cached keys are returned without an API call, which is correct. To force a fresh call:
+The AI cache was hit from a previous run. To force a fresh call:
 
 ```bash
 php artisan translator:ai-translate --target=ar --fresh-cache
-```
-
-If the database was still not updated after a non-cached run, check your `ANTHROPIC_API_KEY` and run:
-
-```bash
-php artisan translator:queue-check
 ```
 
 ---
 
 ### Jobs dispatched but nothing in the `jobs` table
 
-Your `QUEUE_CONNECTION` is `sync`. With the sync driver, jobs execute immediately and are never stored. The command will detect this and warn you. To use real queuing:
+Your `QUEUE_CONNECTION` is `sync`. Set it to `database`:
 
 ```env
 QUEUE_CONNECTION=database
@@ -1035,30 +1072,24 @@ Then:
 php artisan queue:table
 php artisan migrate
 php artisan config:clear
-php artisan translator:queue-check  # verify
+php artisan translator:queue-check
 ```
 
 ---
 
 ### `php artisan queue:work` shows no jobs
 
-Run the diagnostic:
-
 ```bash
 php artisan translator:queue-check --dispatch-test
 ```
 
-Common causes:
-
-- `QUEUE_CONNECTION` not cleared from config cache — run `php artisan config:clear`
-- Worker listening on the wrong queue — use `--queue=default` (or whatever `TRANSLATOR_AI_QUEUE` is set to)
-- `jobs` table in a different database connection than expected
+Common causes: config cache not cleared, worker listening on wrong queue, `jobs` table in a different database connection.
 
 ---
 
 ### Translation shows as complete but values are wrong or empty
 
-The source key may have been translated with an incorrect result and cached. Clear the cache and re-run:
+Clear the cache and re-run:
 
 ```bash
 php artisan translator:ai-translate --target=ar --fresh-cache
@@ -1068,7 +1099,7 @@ php artisan translator:ai-translate --target=ar --fresh-cache
 
 ### "No untranslated keys found" but keys exist in the database
 
-Keys already have a `translated` or `reviewed` status. The command only translates keys with `untranslated` status or a `null` value. If you want to re-translate already-translated keys, reset them first via Tinker:
+Keys already have a `translated` or `reviewed` status. Reset them first:
 
 ```bash
 php artisan tinker --execute="
@@ -1078,7 +1109,20 @@ php artisan tinker --execute="
 "
 ```
 
-Then re-run the translator.
+---
+
+### `translator:scan` reports many orphaned keys for keys I know are in use
+
+The scanner performs **static analysis** only — it finds literal string arguments to translation helpers. Keys built at runtime will appear orphaned even when they are actively used:
+
+```php
+// These will NOT be detected by the scanner:
+__("status.$state")              // variable interpolation
+__('notifications.' . $type)    // concatenation
+$key = 'auth.failed'; __($key); // variable key
+```
+
+If you rely on dynamically-constructed keys, exclude the relevant DB groups from the orphan report by reviewing the list manually rather than running `--purge-orphans`.
 
 ---
 
@@ -1094,7 +1138,7 @@ Add your API key to `.env`:
 ANTHROPIC_API_KEY=sk-ant-api03-...
 ```
 
-Then clear config cache:
+Then:
 
 ```bash
 php artisan config:clear
@@ -1106,7 +1150,7 @@ php artisan config:clear
 
 When running synchronously, the command retries automatically up to `ANTHROPIC_MAX_RETRIES` times with exponential backoff. When using `--queue`, the job releases itself back onto the queue with 60s/120s/240s delays.
 
-If you hit rate limits frequently, reduce the batch size:
+Reduce the batch size to lower per-request token counts:
 
 ```env
 TRANSLATOR_AI_BATCH_SIZE=20

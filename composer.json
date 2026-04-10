@@ -1,5 +1,6 @@
 {
     "name": "syriable/laravel-translator",
+    "version": "1.0.1",
     "description": "This is my package laravel-translator",
     "keywords": [
         "laravel-translator",
