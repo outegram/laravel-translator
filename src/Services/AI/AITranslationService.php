@@ -286,15 +286,15 @@ final readonly class AITranslationService
                 // Queue for bulk insert.
                 $toInsert[] = [
                     'translation_key_id' => $keyModel->id,
-                    'language_id'        => $language->id,
-                    'value'              => $translatedValue,
-                    'status'             => TranslationStatus::Translated->value,
-                    'created_at'         => $now,
-                    'updated_at'         => $now,
+                    'language_id' => $language->id,
+                    'value' => $translatedValue,
+                    'status' => TranslationStatus::Translated->value,
+                    'created_at' => $now,
+                    'updated_at' => $now,
                 ];
             } else {
                 $existing->fill([
-                    'value'  => $translatedValue,
+                    'value' => $translatedValue,
                     'status' => TranslationStatus::Translated,
                 ])->saveQuietly();
             }
@@ -324,21 +324,21 @@ final readonly class AITranslationService
     ): AITranslationLog {
         /** @var AITranslationLog */
         return AITranslationLog::query()->create([
-            'provider'          => $provider,
-            'model'             => $response->model,
-            'source_language'   => $request->sourceLanguage,
-            'target_language'   => $request->targetLanguage,
-            'group_name'        => $request->groupName,
-            'key_count'         => $request->keyCount(),
-            'translated_count'  => $response->translatedCount(),
-            'failed_count'      => count($response->failedKeys),
+            'provider' => $provider,
+            'model' => $response->model,
+            'source_language' => $request->sourceLanguage,
+            'target_language' => $request->targetLanguage,
+            'group_name' => $request->groupName,
+            'key_count' => $request->keyCount(),
+            'translated_count' => $response->translatedCount(),
+            'failed_count' => count($response->failedKeys),
             'input_tokens_used' => $response->inputTokensUsed,
-            'output_tokens_used'=> $response->outputTokensUsed,
-            'actual_cost_usd'   => $response->actualCostUsd,
-            'estimated_cost_usd'=> $estimate?->estimatedCostUsd ?? 0.0,
-            'duration_ms'       => $response->durationMs,
-            'source'            => $source,
-            'failed_keys'       => $response->failedKeys ?: null,
+            'output_tokens_used' => $response->outputTokensUsed,
+            'actual_cost_usd' => $response->actualCostUsd,
+            'estimated_cost_usd' => $estimate?->estimatedCostUsd ?? 0.0,
+            'duration_ms' => $response->durationMs,
+            'source' => $source,
+            'failed_keys' => $response->failedKeys ?: null,
         ]);
     }
 

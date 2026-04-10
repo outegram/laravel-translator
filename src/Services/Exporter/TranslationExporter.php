@@ -263,11 +263,11 @@ final readonly class TranslationExporter implements TranslationExporterContract
     {
         return $this->exportLogModel()::query()->create([
             'locale_count' => $result->localeCount,
-            'file_count'   => $result->fileCount,
-            'key_count'    => $result->keyCount,
-            'duration_ms'  => $result->durationMs,
+            'file_count' => $result->fileCount,
+            'key_count' => $result->keyCount,
+            'duration_ms' => $result->durationMs,
             'triggered_by' => $options->triggeredBy,
-            'source'       => $options->source,
+            'source' => $options->source,
         ]);
     }
 

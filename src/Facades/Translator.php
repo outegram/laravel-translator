@@ -32,7 +32,7 @@ use Syriable\Translator\Models\Language;
  * @method static TranslationResponse translate(TranslationRequest $request, Language $language, ?string $provider = null, ?TranslationEstimate $estimate = null)
  *
  * @see \Syriable\Translator\Services\AI\AITranslationService
- * @see \Syriable\Translator\Contracts\AITranslationServiceContract
+ * @see AITranslationServiceContract
  */
 final class Translator extends Facade
 {

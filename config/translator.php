@@ -58,12 +58,12 @@ return [
     */
 
     'models' => [
-        'language'        => Language::class,
-        'group'           => Group::class,
+        'language' => Language::class,
+        'group' => Group::class,
         'translation_key' => TranslationKey::class,
-        'translation'     => Translation::class,
-        'import_log'      => ImportLog::class,
-        'export_log'      => ExportLog::class,
+        'translation' => Translation::class,
+        'import_log' => ImportLog::class,
+        'export_log' => ExportLog::class,
     ],
 
     /*
@@ -154,9 +154,9 @@ return [
 
     'cache' => [
         'enabled' => env('TRANSLATOR_CACHE_ENABLED', true),
-        'store'   => env('TRANSLATOR_CACHE_STORE', null),
-        'ttl'     => env('TRANSLATOR_CACHE_TTL', 3600),
-        'prefix'  => env('TRANSLATOR_CACHE_PREFIX', 'syriable_translator'),
+        'store' => env('TRANSLATOR_CACHE_STORE', null),
+        'ttl' => env('TRANSLATOR_CACHE_TTL', 3600),
+        'prefix' => env('TRANSLATOR_CACHE_PREFIX', 'syriable_translator'),
     ],
 
     /*
@@ -166,8 +166,8 @@ return [
     */
 
     'events' => [
-        'import_completed'         => env('TRANSLATOR_EVENT_IMPORT_COMPLETED', true),
-        'export_completed'         => env('TRANSLATOR_EVENT_EXPORT_COMPLETED', true),
+        'import_completed' => env('TRANSLATOR_EVENT_IMPORT_COMPLETED', true),
+        'export_completed' => env('TRANSLATOR_EVENT_EXPORT_COMPLETED', true),
 
         // Dispatched by AITranslationService after every translation execution.
         // Hook into this from a companion package to send notifications, invalidate
@@ -248,7 +248,7 @@ return [
 
         'translation_memory' => [
             'enabled' => env('TRANSLATOR_AI_MEMORY_ENABLED', true),
-            'limit'   => env('TRANSLATOR_AI_MEMORY_LIMIT', 20),
+            'limit' => env('TRANSLATOR_AI_MEMORY_LIMIT', 20),
         ],
 
         /*
@@ -259,8 +259,8 @@ return [
 
         'cache' => [
             'enabled' => env('TRANSLATOR_AI_CACHE_ENABLED', true),
-            'ttl'     => env('TRANSLATOR_AI_CACHE_TTL', 86400),
-            'prefix'  => env('TRANSLATOR_AI_CACHE_PREFIX', 'translator_ai'),
+            'ttl' => env('TRANSLATOR_AI_CACHE_TTL', 86400),
+            'prefix' => env('TRANSLATOR_AI_CACHE_PREFIX', 'translator_ai'),
         ],
 
         /*
@@ -270,11 +270,11 @@ return [
         */
 
         'token_estimation' => [
-            'default_ratio'            => env('TRANSLATOR_AI_DEFAULT_RATIO', 4.0),
-            'dense_script_ratio'       => env('TRANSLATOR_AI_DENSE_RATIO', 2.0),
+            'default_ratio' => env('TRANSLATOR_AI_DEFAULT_RATIO', 4.0),
+            'dense_script_ratio' => env('TRANSLATOR_AI_DENSE_RATIO', 2.0),
             'default_expansion_factor' => env('TRANSLATOR_AI_EXPANSION_FACTOR', 1.2),
-            'chars_per_token'          => [],
-            'expansion_factors'        => [],
+            'chars_per_token' => [],
+            'expansion_factors' => [],
         ],
 
         /*
@@ -291,12 +291,12 @@ return [
         'providers' => [
 
             'claude' => [
-                'api_key'                   => env('ANTHROPIC_API_KEY'),
-                'model'                     => env('ANTHROPIC_MODEL', 'claude-haiku-4-5-20251001'),
-                'max_tokens'                => env('ANTHROPIC_MAX_TOKENS', 4096),
-                'timeout_seconds'           => env('ANTHROPIC_TIMEOUT', 120),
-                'max_retries'               => env('ANTHROPIC_MAX_RETRIES', 3),
-                'input_cost_per_1k_tokens'  => 0.003,
+                'api_key' => env('ANTHROPIC_API_KEY'),
+                'model' => env('ANTHROPIC_MODEL', 'claude-haiku-4-5-20251001'),
+                'max_tokens' => env('ANTHROPIC_MAX_TOKENS', 4096),
+                'timeout_seconds' => env('ANTHROPIC_TIMEOUT', 120),
+                'max_retries' => env('ANTHROPIC_MAX_RETRIES', 3),
+                'input_cost_per_1k_tokens' => 0.003,
                 'output_cost_per_1k_tokens' => 0.015,
             ],
 

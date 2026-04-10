@@ -32,9 +32,15 @@ function makeEventStubProvider(array $translations = []): TranslationProviderInt
             return new TranslationResponse('stub', 'stub-1', $this->translations, [], 100, 50, 0.001, 42);
         }
 
-        public function providerName(): string { return 'stub'; }
+        public function providerName(): string
+        {
+            return 'stub';
+        }
 
-        public function isAvailable(): bool { return true; }
+        public function isAvailable(): bool
+        {
+            return true;
+        }
     };
 }
 

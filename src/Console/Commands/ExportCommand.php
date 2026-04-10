@@ -75,11 +75,11 @@ final class ExportCommand extends Command
     private function resolveExportOptions(): ExportOptions
     {
         return ExportOptions::fromConfig([
-            'locale'      => $this->option('locale') ?: null,
-            'group'       => $this->option('group') ?: null,
-            'dry_run'     => (bool) $this->option('dry-run'),
-            'source'      => 'cli',
-            'triggered_by'=> $this->resolveTriggeredBy(),
+            'locale' => $this->option('locale') ?: null,
+            'group' => $this->option('group') ?: null,
+            'dry_run' => (bool) $this->option('dry-run'),
+            'source' => 'cli',
+            'triggered_by' => $this->resolveTriggeredBy(),
         ]);
     }
 

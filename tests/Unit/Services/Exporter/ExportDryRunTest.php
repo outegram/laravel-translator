@@ -17,26 +17,26 @@ describe('translator:export --dry-run', function (): void {
         mkdir($this->outputDir, 0755, true);
 
         config([
-            'translator.lang_path'       => $this->outputDir,
+            'translator.lang_path' => $this->outputDir,
             'translator.source_language' => 'en',
         ]);
 
         $this->english = Language::factory()->english()->create();
-        $this->french  = Language::factory()->french()->create();
-        $this->group   = Group::factory()->auth()->create();
-        $this->key     = TranslationKey::factory()->create([
+        $this->french = Language::factory()->french()->create();
+        $this->group = Group::factory()->auth()->create();
+        $this->key = TranslationKey::factory()->create([
             'group_id' => $this->group->id,
-            'key'      => 'failed',
+            'key' => 'failed',
         ]);
 
         Translation::factory()->translated('These credentials do not match.')->create([
             'translation_key_id' => $this->key->id,
-            'language_id'        => $this->english->id,
+            'language_id' => $this->english->id,
         ]);
 
         Translation::factory()->translated('Ces identifiants ne correspondent pas.')->create([
             'translation_key_id' => $this->key->id,
-            'language_id'        => $this->french->id,
+            'language_id' => $this->french->id,
         ]);
     });
 

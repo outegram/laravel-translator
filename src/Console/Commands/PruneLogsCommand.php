@@ -110,7 +110,7 @@ final class PruneLogsCommand extends Command
         return [
             'import' => ImportLog::query()->where('created_at', '<', $cutoff)->count(),
             'export' => ExportLog::query()->where('created_at', '<', $cutoff)->count(),
-            'ai'     => AITranslationLog::query()->where('created_at', '<', $cutoff)->count(),
+            'ai' => AITranslationLog::query()->where('created_at', '<', $cutoff)->count(),
         ];
     }
 
