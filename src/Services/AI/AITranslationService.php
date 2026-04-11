@@ -12,6 +12,7 @@ use Syriable\Translator\DTOs\AI\TranslationResponse;
 use Syriable\Translator\Enums\TranslationStatus;
 use Syriable\Translator\Events\AITranslationCompleted;
 use Syriable\Translator\Models\AITranslationLog;
+use Syriable\Translator\Models\Group;
 use Syriable\Translator\Models\Language;
 use Syriable\Translator\Models\Translation;
 use Syriable\Translator\Models\TranslationKey;
@@ -93,7 +94,7 @@ final readonly class AITranslationService
             // ── Full cache hit ────────────────────────────────────────────────
             $response = $this->buildCachedOnlyResponse($cachedTranslations, $resolvedProvider);
 
-            $this->persistTranslations($response, $language);
+            $this->persistTranslations($response, $language, $request);
             $log = $this->recordAILog($request, $response, $estimate, $resolvedProvider, source: 'cache');
             $this->dispatchCompletedEvent($log);
 
@@ -109,7 +110,7 @@ final readonly class AITranslationService
 
         $mergedResponse = $this->mergeWithCached($apiResponse, $cachedTranslations, $request);
 
-        $this->persistTranslations($mergedResponse, $language);
+        $this->persistTranslations($mergedResponse, $language, $request);
         $log = $this->recordAILog($request, $mergedResponse, $estimate, $resolvedProvider, source: 'api');
         $this->dispatchCompletedEvent($log);
 
@@ -240,27 +241,61 @@ final readonly class AITranslationService
      * Persist translated values to Translation records in the database.
      *
      * Uses a bulk pre-load strategy to avoid N+1 queries:
-     *  - One query to load all matching TranslationKey records.
+     *  - One query to resolve the Group record for the request (prevents cross-group collisions).
+     *  - One query to load all matching TranslationKey records scoped by group_id.
      *  - One query to load all existing Translation rows for the target language.
      *  - One bulk INSERT for all new rows.
      *  - Individual saveQuietly() calls only for existing rows that need updating.
+     *
+     * All model classes are resolved from config('translator.models.*') to support
+     * application-level model overrides.
+     *
+     * ### Group scoping
+     *
+     * When `$request->groupName` maps to a real Group record, keys are looked up
+     * scoped by `group_id`. This prevents silent data corruption when the same key
+     * name exists in multiple groups (e.g. 'failed' in 'auth' and 'passwords').
+     *
+     * When the group name does not correspond to a database record (e.g. the
+     * sentinel value '_all' used by AITranslateCommand for cross-group batches),
+     * scoping by group_id is skipped and keys are matched by name alone — preserving
+     * the original behaviour for that call path.
      */
-    private function persistTranslations(TranslationResponse $response, Language $language): void
-    {
+    private function persistTranslations(
+        TranslationResponse $response,
+        Language $language,
+        TranslationRequest $request,
+    ): void {
         if (empty($response->translations)) {
             return;
         }
 
+        $translationKeyModel = $this->translationKeyModel();
+        $translationModel    = $this->translationModel();
+        $groupModel          = $this->groupModel();
+
         $keys = array_keys($response->translations);
 
-        // Bulk load all matching TranslationKey records — 1 query.
-        $keyModels = TranslationKey::query()
-            ->whereIn('key', $keys)
-            ->get()
-            ->keyBy('key');
+        // Try to resolve the group so we can scope the key lookup by group_id.
+        // When the group name is a sentinel (e.g. '_all') or refers to a group that
+        // does not yet exist, $group will be null and we fall back to name-only lookup.
+        $group = $groupModel::query()
+            ->where('name', $request->groupName)
+            ->where('namespace', $request->namespace)
+            ->first();
+
+        // Build the TranslationKey collection — scoped when a real group is resolved,
+        // unscoped (by name only) when the request spans multiple groups.
+        $keyQuery = $translationKeyModel::query()->whereIn('key', $keys);
+
+        if ($group !== null) {
+            $keyQuery->where('group_id', $group->id);
+        }
+
+        $keyModels = $keyQuery->get()->keyBy('key');
 
         // Bulk load all existing Translation rows for this language — 1 query.
-        $existingTranslations = Translation::query()
+        $existingTranslations = $translationModel::query()
             ->whereIn('translation_key_id', $keyModels->pluck('id'))
             ->where('language_id', $language->id)
             ->get()
@@ -302,7 +337,7 @@ final readonly class AITranslationService
 
         // Single bulk insert for all new rows — 1 query.
         if (! empty($toInsert)) {
-            Translation::query()->insert($toInsert);
+            $translationModel::query()->insert($toInsert);
         }
     }
 
@@ -355,5 +390,27 @@ final readonly class AITranslationService
     private function defaultProvider(): string
     {
         return (string) config('translator.ai.default_provider', 'claude');
+    }
+
+    // -------------------------------------------------------------------------
+    // Model Resolvers
+    // -------------------------------------------------------------------------
+
+    /** @return class-string<Group> */
+    private function groupModel(): string
+    {
+        return config('translator.models.group', Group::class);
+    }
+
+    /** @return class-string<TranslationKey> */
+    private function translationKeyModel(): string
+    {
+        return config('translator.models.translation_key', TranslationKey::class);
+    }
+
+    /** @return class-string<Translation> */
+    private function translationModel(): string
+    {
+        return config('translator.models.translation', Translation::class);
     }
 }

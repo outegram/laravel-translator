@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Syriable\Translator\Models;
 
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Override;
+use Syriable\Translator\Database\Factories\ExportLogFactory;
 use Syriable\Translator\Models\Concerns\HasTranslatorTable;
 
 /**
@@ -24,9 +26,16 @@ use Syriable\Translator\Models\Concerns\HasTranslatorTable;
  */
 final class ExportLog extends Model
 {
+    /** @use HasFactory<ExportLogFactory> */
+    use HasFactory;
     use HasTranslatorTable;
 
     protected string $translatorTable = 'export_logs';
+
+    protected static function newFactory(): ExportLogFactory
+    {
+        return ExportLogFactory::new();
+    }
 
     protected $fillable = [
         'locale_count',

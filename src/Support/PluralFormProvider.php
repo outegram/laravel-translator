@@ -28,7 +28,7 @@ final class PluralFormProvider
      * @var string[]
      */
     private const array ONE_FORM = [
-        'az', 'bm', 'bo', 'dz', 'fa', 'id', 'ig', 'ii', 'in', 'ja',
+        'bm', 'bo', 'dz', 'fa', 'id', 'ig', 'ii', 'in', 'ja',
         'jbo', 'jv', 'jw', 'ka', 'kde', 'kea', 'km', 'ko', 'lo', 'ms',
         'my', 'nqo', 'root', 'sah', 'ses', 'sg', 'th', 'to', 'tr',
         'vi', 'wo', 'yo', 'zh', 'zh-Hant',

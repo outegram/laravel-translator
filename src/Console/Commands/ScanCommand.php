@@ -209,7 +209,6 @@ final class ScanCommand extends Command
 
         $scanner = app(TranslationKeyScanner::class);
         $inserted = 0;
-        $failed = 0;
 
         DB::beginTransaction();
 
@@ -235,10 +234,6 @@ final class ScanCommand extends Command
         }
 
         info("✅ Inserted {$inserted} key(s). Run <comment>translator:import</comment> to populate values from lang files.");
-
-        if ($failed > 0) {
-            warning("{$failed} key(s) could not be inserted. Check the output above.");
-        }
 
         return self::SUCCESS;
     }
@@ -314,30 +309,43 @@ final class ScanCommand extends Command
             }
         }
 
+        // Resolve dependencies once — outside the loop.
+        $scanner   = app(TranslationKeyScanner::class);
+
+        /** @var class-string<Group> $groupModel */
+        $groupModel = config('translator.models.group', Group::class);
+
+        /** @var class-string<TranslationKey> $keyModel */
+        $keyModel = config('translator.models.translation_key', TranslationKey::class);
+
+        // Parse every orphaned key into [groupName, keyString] pairs first.
+        $parsed = [];
+        $groupNames = [];
+
+        foreach ($result->orphanedKeys as $qualifiedKey) {
+            [$groupName, $keyString] = $scanner->parseKeyComponents($qualifiedKey);
+            $parsed[] = [$groupName, $keyString];
+            $groupNames[$groupName] = true;
+        }
+
+        // Bulk-load all relevant groups in a single query — eliminates N+1.
+        $groups = $groupModel::query()
+            ->whereNull('namespace')
+            ->whereIn('name', array_keys($groupNames))
+            ->get()
+            ->keyBy('name');
+
         $deletedCount = 0;
 
         DB::beginTransaction();
 
         try {
-            foreach ($result->orphanedKeys as $qualifiedKey) {
-                $scanner = app(TranslationKeyScanner::class);
-                [$groupName, $keyString] = $scanner->parseKeyComponents($qualifiedKey);
-
-                /** @var class-string<Group> $groupModel */
-                $groupModel = config('translator.models.group', Group::class);
-
-                /** @var Group|null $group */
-                $group = $groupModel::query()
-                    ->whereNull('namespace')
-                    ->where('name', $groupName)
-                    ->first();
+            foreach ($parsed as [$groupName, $keyString]) {
+                $group = $groups->get($groupName);
 
                 if ($group === null) {
                     continue;
                 }
-
-                /** @var class-string<TranslationKey> $keyModel */
-                $keyModel = config('translator.models.translation_key', TranslationKey::class);
 
                 $deleted = $keyModel::query()
                     ->where('group_id', $group->id)

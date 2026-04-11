@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Syriable\Translator\Services\Importer;
 
 use Illuminate\Support\Facades\DB;
+use Syriable\Translator\Contracts\TranslationImporterContract;
 use Syriable\Translator\DTOs\ImportOptions;
 use Syriable\Translator\DTOs\ImportResult;
 use Syriable\Translator\Enums\TranslationStatus;
@@ -32,7 +33,7 @@ use Syriable\Translator\Services\TranslationKeyReplicator;
  * All model classes are resolved from config('translator.models.*') to support
  * application-level model overrides.
  */
-final readonly class TranslationImporter
+final readonly class TranslationImporter implements TranslationImporterContract
 {
     /**
      * Group name used to store all JSON (non-namespaced) translation keys.

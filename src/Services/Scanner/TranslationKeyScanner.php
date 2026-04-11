@@ -64,11 +64,12 @@ final readonly class TranslationKeyScanner
         sort($codeKeys);
 
         return new ScanResult(
-            usedKeys: $codeKeys,
+            usedKeys: [],
             missingKeys: $missingKeys,
             orphanedKeys: $orphanedKeys,
             fileCount: $fileCount,
             durationMs: (int) ((microtime(true) - $startTime) * 1000),
+            usedKeyCount: count($codeKeys),
         );
     }
 
@@ -118,24 +119,28 @@ final readonly class TranslationKeyScanner
      *  - JSON group (_json):      "{key}"               (e.g. "Welcome to our app")
      *  - Vendor groups:           excluded entirely
      *
-     * Nested dot-notation keys within PHP groups are preserved as-is, so a
-     * TranslationKey with key "inbox.empty" in group "messages" produces the
-     * qualified string "messages.inbox.empty", matching the code call
-     * __('messages.inbox.empty').
+     * Uses cursor() to stream rows one at a time, avoiding loading the entire
+     * TranslationKey table into memory for large datasets.
      *
      * @return string[] Sorted, unique array of fully-qualified key strings.
      */
     private function resolveDbKeys(): array
     {
-        $keys = TranslationKey::query()
-            ->with('group')
-            ->get()
-            ->filter(fn (TranslationKey $key): bool => ! $key->group->isVendor())
-            ->map(fn (TranslationKey $key): string => $this->qualifyKey($key))
-            ->unique()
-            ->values()
-            ->all();
+        $seen = [];
 
+        TranslationKey::query()
+            ->with('group')
+            ->cursor()
+            ->each(function (TranslationKey $key) use (&$seen): void {
+                if ($key->group->isVendor()) {
+                    return;
+                }
+
+                $qualified = $this->qualifyKey($key);
+                $seen[$qualified] = true;
+            });
+
+        $keys = array_keys($seen);
         sort($keys);
 
         return $keys;

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Syriable\Translator\AI\Prompts;
 
 use Syriable\Translator\DTOs\AI\TranslationRequest;
+use Syriable\Translator\Models\Group;
 use Syriable\Translator\Models\Language;
 use Syriable\Translator\Models\Translation;
 use Syriable\Translator\Support\PluralFormProvider;
@@ -42,6 +43,25 @@ use Syriable\Translator\Support\PluralFormProvider;
  */
 final class TranslationPromptBuilder
 {
+    /**
+     * Per-instance cache for resolved language names, keyed by locale code.
+     *
+     * Populated lazily by resolveLanguageName(). Since the driver singletons
+     * hold a single TranslationPromptBuilder instance across the entire request
+     * lifecycle, this provides the same "one DB hit per locale" guarantee as a
+     * static cache while preserving test isolation between test cases.
+     *
+     * @var array<string, string>
+     */
+    private array $languageNameCache = [];
+
+    /**
+     * Per-instance cache for rendered translation memory blocks, keyed by
+     * target locale code.
+     *
+     * @var array<string, string>
+     */
+    private array $translationMemoryCache = [];
     /**
      * Build the system-role prompt containing persistent translation rules.
      *
@@ -200,13 +220,19 @@ final class TranslationPromptBuilder
     /**
      * Resolve a human-readable language name from its BCP 47 code.
      *
+     * Uses a per-request static cache so that multiple calls within a single
+     * batch (e.g. system prompt + plural rule) hit the database only once.
+     *
      * Falls back to the code itself when no name is registered.
      */
     private function resolveLanguageName(string $localeCode): string
     {
-        $language = Language::query()->where('code', $localeCode)->value('name');
+        if (! array_key_exists($localeCode, $this->languageNameCache)) {
+            $this->languageNameCache[$localeCode] =
+                Language::query()->where('code', $localeCode)->value('name') ?? $localeCode;
+        }
 
-        return $language ?? $localeCode;
+        return $this->languageNameCache[$localeCode];
     }
 
     // -------------------------------------------------------------------------
@@ -223,8 +249,12 @@ final class TranslationPromptBuilder
      *  - No reviewed translations exist for the target language.
      *  - The target language is not found in the database.
      *
-     * Only application-level translations (no vendor namespace) are included,
-     * and only those with a non-null, non-empty value.
+     * Keys are emitted in group-qualified form (e.g. "auth.failed") so the AI
+     * model can correlate memory entries with keys in the current request.
+     * JSON group (_json) keys are emitted as bare strings (no group prefix).
+     *
+     * Uses a per-request static cache keyed on target language to avoid
+     * repeated identical queries when building system prompts within a batch.
      *
      * Source: `Reviewed` status only — never `Translated`, to avoid propagating
      * unreviewed AI output back into future AI prompts.
@@ -235,10 +265,28 @@ final class TranslationPromptBuilder
             return '';
         }
 
+        $cacheKey = $request->targetLanguage;
+
+        if (! array_key_exists($cacheKey, $this->translationMemoryCache)) {
+            $this->translationMemoryCache[$cacheKey] =
+                $this->buildTranslationMemoryContent($request->targetLanguage);
+        }
+
+        return $this->translationMemoryCache[$cacheKey];
+    }
+
+    /**
+     * Execute the database queries and render the `<translation_memory>` block.
+     *
+     * Separated from renderTranslationMemory() so the static cache wraps only
+     * the expensive work while keeping the query logic easy to test in isolation.
+     */
+    private function buildTranslationMemoryContent(string $targetLanguage): string
+    {
         $limit = max(1, (int) config('translator.ai.translation_memory.limit', 20));
 
         $language = Language::query()
-            ->where('code', $request->targetLanguage)
+            ->where('code', $targetLanguage)
             ->first();
 
         if ($language === null) {
@@ -250,13 +298,21 @@ final class TranslationPromptBuilder
             ->where('language_id', $language->id)
             ->whereNotNull('value')
             ->whereHas('translationKey.group', static fn ($q) => $q->whereNull('namespace'))
-            ->with('translationKey')
+            ->with(['translationKey.group'])
             ->limit($limit)
             ->get()
             ->filter(static fn (Translation $t): bool => $t->translationKey !== null && filled($t->value))
-            ->mapWithKeys(static fn (Translation $t): array => [
-                $t->translationKey->key => $t->value,
-            ]);
+            ->mapWithKeys(static function (Translation $t): array {
+                $key   = $t->translationKey;
+                $group = $key->group;
+
+                // JSON group keys are bare strings (no group prefix).
+                $qualifiedKey = $group->name === Group::JSON_GROUP_NAME
+                    ? $key->key
+                    : $group->name.'.'.$key->key;
+
+                return [$qualifiedKey => $t->value];
+            });
 
         if ($examples->isEmpty()) {
             return '';
@@ -267,7 +323,7 @@ final class TranslationPromptBuilder
         return <<<MEMORY
 
         <translation_memory>
-            The following strings have been reviewed and approved for {$request->targetLanguage}.
+            The following strings have been reviewed and approved for {$targetLanguage}.
             When you encounter these keys in the current request, use these exact translations.
             For other keys, use these as a reference for consistent terminology and tone.
             {$json}

@@ -63,4 +63,29 @@ describe('ScanResult', function (): void {
             ->and($orphaned->isClean())->toBeFalse()
             ->and($both->isClean())->toBeFalse();
     });
+
+    it('uses explicit usedKeyCount when provided and usedKeys array is empty', function (): void {
+        $result = new ScanResult(
+            usedKeys: [],
+            missingKeys: [],
+            orphanedKeys: [],
+            fileCount: 3,
+            durationMs: 100,
+            usedKeyCount: 42,
+        );
+
+        expect($result->usedKeyCount())->toBe(42);
+    });
+
+    it('falls back to count(usedKeys) when usedKeyCount is zero', function (): void {
+        $result = new ScanResult(
+            usedKeys: ['a', 'b', 'c'],
+            missingKeys: [],
+            orphanedKeys: [],
+            fileCount: 1,
+            durationMs: 50,
+        );
+
+        expect($result->usedKeyCount())->toBe(3);
+    });
 });

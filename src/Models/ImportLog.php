@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Syriable\Translator\Models;
 
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Override;
+use Syriable\Translator\Database\Factories\ImportLogFactory;
 use Syriable\Translator\Models\Concerns\HasTranslatorTable;
 
 /**
@@ -37,10 +39,17 @@ use Syriable\Translator\Models\Concerns\HasTranslatorTable;
  */
 final class ImportLog extends Model
 {
+    /** @use HasFactory<ImportLogFactory> */
+    use HasFactory;
     use HasTranslatorTable;
 
     /** @var string Base table name without prefix. */
     protected string $translatorTable = 'import_logs';
+
+    protected static function newFactory(): ImportLogFactory
+    {
+        return ImportLogFactory::new();
+    }
 
     protected $fillable = [
         'locale_count',
