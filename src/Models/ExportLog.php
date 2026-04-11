@@ -28,6 +28,7 @@ final class ExportLog extends Model
 {
     /** @use HasFactory<ExportLogFactory> */
     use HasFactory;
+
     use HasTranslatorTable;
 
     protected string $translatorTable = 'export_logs';

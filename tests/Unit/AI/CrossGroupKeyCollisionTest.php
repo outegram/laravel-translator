@@ -28,17 +28,17 @@ describe('AITranslationService — cross-group key collision regression', functi
         // Build two groups that both contain a 'failed' key.
         $this->language = Language::factory()->create(['code' => 'fr', 'name' => 'French', 'active' => true]);
 
-        $this->authGroup      = Group::factory()->create(['name' => 'auth',      'namespace' => null]);
+        $this->authGroup = Group::factory()->create(['name' => 'auth',      'namespace' => null]);
         $this->passwordsGroup = Group::factory()->create(['name' => 'passwords', 'namespace' => null]);
 
         $this->authKey = TranslationKey::factory()->create([
             'group_id' => $this->authGroup->id,
-            'key'      => 'failed',
+            'key' => 'failed',
         ]);
 
         $this->passwordsKey = TranslationKey::factory()->create([
             'group_id' => $this->passwordsGroup->id,
-            'key'      => 'failed',
+            'key' => 'failed',
         ]);
     });
 
@@ -68,7 +68,7 @@ describe('AITranslationService — cross-group key collision regression', functi
         $service = app(AITranslationService::class);
 
         $reflection = new ReflectionClass($service);
-        $method     = $reflection->getMethod('persistTranslations');
+        $method = $reflection->getMethod('persistTranslations');
         $method->setAccessible(true);
         $method->invoke($service, $response, $this->language, $request);
 
@@ -105,9 +105,9 @@ describe('AITranslationService — cross-group key collision regression', functi
             durationMs: 0,
         );
 
-        $service    = app(AITranslationService::class);
+        $service = app(AITranslationService::class);
         $reflection = new ReflectionClass($service);
-        $method     = $reflection->getMethod('persistTranslations');
+        $method = $reflection->getMethod('persistTranslations');
         $method->setAccessible(true);
         $method->invoke($service, $response, $this->language, $request);
 
@@ -159,9 +159,9 @@ describe('AITranslationService — cross-group key collision regression', functi
             durationMs: 0,
         );
 
-        $service    = app(AITranslationService::class);
+        $service = app(AITranslationService::class);
         $reflection = new ReflectionClass($service);
-        $method     = $reflection->getMethod('persistTranslations');
+        $method = $reflection->getMethod('persistTranslations');
         $method->setAccessible(true);
 
         $method->invoke($service, $authResponse, $this->language, $authRequest);

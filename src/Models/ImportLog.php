@@ -41,6 +41,7 @@ final class ImportLog extends Model
 {
     /** @use HasFactory<ImportLogFactory> */
     use HasFactory;
+
     use HasTranslatorTable;
 
     /** @var string Base table name without prefix. */

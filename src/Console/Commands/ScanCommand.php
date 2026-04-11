@@ -310,7 +310,7 @@ final class ScanCommand extends Command
         }
 
         // Resolve dependencies once — outside the loop.
-        $scanner   = app(TranslationKeyScanner::class);
+        $scanner = app(TranslationKeyScanner::class);
 
         /** @var class-string<Group> $groupModel */
         $groupModel = config('translator.models.group', Group::class);

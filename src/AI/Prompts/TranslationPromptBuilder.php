@@ -62,6 +62,7 @@ final class TranslationPromptBuilder
      * @var array<string, string>
      */
     private array $translationMemoryCache = [];
+
     /**
      * Build the system-role prompt containing persistent translation rules.
      *
@@ -303,7 +304,7 @@ final class TranslationPromptBuilder
             ->get()
             ->filter(static fn (Translation $t): bool => $t->translationKey !== null && filled($t->value))
             ->mapWithKeys(static function (Translation $t): array {
-                $key   = $t->translationKey;
+                $key = $t->translationKey;
                 $group = $key->group;
 
                 // JSON group keys are bare strings (no group prefix).

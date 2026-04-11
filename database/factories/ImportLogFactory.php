@@ -17,14 +17,14 @@ final class ImportLogFactory extends Factory
     public function definition(): array
     {
         return [
-            'locale_count'  => $this->faker->numberBetween(1, 10),
-            'key_count'     => $this->faker->numberBetween(10, 500),
-            'new_count'     => $this->faker->numberBetween(0, 100),
+            'locale_count' => $this->faker->numberBetween(1, 10),
+            'key_count' => $this->faker->numberBetween(10, 500),
+            'new_count' => $this->faker->numberBetween(0, 100),
             'updated_count' => $this->faker->numberBetween(0, 50),
-            'duration_ms'   => $this->faker->numberBetween(100, 5000),
-            'source'        => $this->faker->randomElement(['cli', 'ui', 'api']),
-            'triggered_by'  => null,
-            'fresh'         => false,
+            'duration_ms' => $this->faker->numberBetween(100, 5000),
+            'source' => $this->faker->randomElement(['cli', 'ui', 'api']),
+            'triggered_by' => null,
+            'fresh' => false,
         ];
     }
 

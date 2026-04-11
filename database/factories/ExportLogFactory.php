@@ -17,12 +17,12 @@ final class ExportLogFactory extends Factory
     public function definition(): array
     {
         return [
-            'locale_count'  => $this->faker->numberBetween(1, 10),
-            'file_count'    => $this->faker->numberBetween(1, 50),
-            'key_count'     => $this->faker->numberBetween(10, 500),
-            'duration_ms'   => $this->faker->numberBetween(50, 3000),
-            'source'        => $this->faker->randomElement(['cli', 'ui', 'api']),
-            'triggered_by'  => null,
+            'locale_count' => $this->faker->numberBetween(1, 10),
+            'file_count' => $this->faker->numberBetween(1, 50),
+            'key_count' => $this->faker->numberBetween(10, 500),
+            'duration_ms' => $this->faker->numberBetween(50, 3000),
+            'source' => $this->faker->randomElement(['cli', 'ui', 'api']),
+            'triggered_by' => null,
         ];
     }
 

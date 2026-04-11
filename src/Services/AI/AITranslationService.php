@@ -271,8 +271,8 @@ final readonly class AITranslationService
         }
 
         $translationKeyModel = $this->translationKeyModel();
-        $translationModel    = $this->translationModel();
-        $groupModel          = $this->groupModel();
+        $translationModel = $this->translationModel();
+        $groupModel = $this->groupModel();
 
         $keys = array_keys($response->translations);
 

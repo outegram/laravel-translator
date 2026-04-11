@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use Syriable\Translator\AI\Prompts\TranslationPromptBuilder;
 use Syriable\Translator\DTOs\AI\TranslationRequest;
-use Syriable\Translator\Enums\TranslationStatus;
 use Syriable\Translator\Models\Group;
 use Syriable\Translator\Models\Language;
 use Syriable\Translator\Models\Translation;
@@ -31,12 +30,12 @@ describe('TranslationPromptBuilder — translation memory', function (): void {
         config(['translator.ai.translation_memory.enabled' => true]);
 
         $language = Language::factory()->create(['code' => 'fr', 'name' => 'French']);
-        $group    = Group::factory()->auth()->create();
-        $tkKey    = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
+        $group = Group::factory()->auth()->create();
+        $tkKey = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
 
         Translation::factory()->reviewed('Identifiants incorrects.')->create([
             'translation_key_id' => $tkKey->id,
-            'language_id'        => $language->id,
+            'language_id' => $language->id,
         ]);
 
         $prompt = $this->builder->buildSystemPrompt($this->request);
@@ -48,12 +47,12 @@ describe('TranslationPromptBuilder — translation memory', function (): void {
         config(['translator.ai.translation_memory.enabled' => true]);
 
         $language = Language::factory()->create(['code' => 'fr', 'name' => 'French']);
-        $group    = Group::factory()->auth()->create();
-        $tkKey    = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
+        $group = Group::factory()->auth()->create();
+        $tkKey = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
 
         Translation::factory()->reviewed('Identifiants incorrects.')->create([
             'translation_key_id' => $tkKey->id,
-            'language_id'        => $language->id,
+            'language_id' => $language->id,
         ]);
 
         $prompt = $this->builder->buildSystemPrompt($this->request);
@@ -68,12 +67,12 @@ describe('TranslationPromptBuilder — translation memory', function (): void {
         config(['translator.ai.translation_memory.enabled' => true]);
 
         $language = Language::factory()->create(['code' => 'fr', 'name' => 'French']);
-        $group    = Group::factory()->auth()->create();
-        $tkKey    = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
+        $group = Group::factory()->auth()->create();
+        $tkKey = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
 
         Translation::factory()->reviewed('Identifiants incorrects.')->create([
             'translation_key_id' => $tkKey->id,
-            'language_id'        => $language->id,
+            'language_id' => $language->id,
         ]);
 
         $prompt = $this->builder->buildSystemPrompt($this->request);
@@ -90,12 +89,12 @@ describe('TranslationPromptBuilder — translation memory', function (): void {
 
         // Seed reviewed data — should be ignored.
         $language = Language::factory()->create(['code' => 'fr', 'name' => 'French']);
-        $group    = Group::factory()->auth()->create();
-        $tkKey    = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
+        $group = Group::factory()->auth()->create();
+        $tkKey = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
 
         Translation::factory()->reviewed('Identifiants incorrects.')->create([
             'translation_key_id' => $tkKey->id,
-            'language_id'        => $language->id,
+            'language_id' => $language->id,
         ]);
 
         $prompt = $this->builder->buildSystemPrompt($this->request);
@@ -112,12 +111,12 @@ describe('TranslationPromptBuilder — translation memory', function (): void {
 
         // Language exists but has only Translated (not Reviewed) entries.
         $language = Language::factory()->create(['code' => 'fr', 'name' => 'French']);
-        $group    = Group::factory()->auth()->create();
-        $tkKey    = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
+        $group = Group::factory()->auth()->create();
+        $tkKey = TranslationKey::factory()->create(['group_id' => $group->id, 'key' => 'failed']);
 
         Translation::factory()->translated('Identifiants incorrects.')->create([
             'translation_key_id' => $tkKey->id,
-            'language_id'        => $language->id,
+            'language_id' => $language->id,
         ]);
 
         $prompt = $this->builder->buildSystemPrompt($this->request);
@@ -141,16 +140,16 @@ describe('TranslationPromptBuilder — translation memory', function (): void {
     it('uses bare key for JSON group entries in translation memory', function (): void {
         config(['translator.ai.translation_memory.enabled' => true]);
 
-        $language  = Language::factory()->create(['code' => 'fr', 'name' => 'French']);
+        $language = Language::factory()->create(['code' => 'fr', 'name' => 'French']);
         $jsonGroup = Group::factory()->json()->create();
-        $tkKey     = TranslationKey::factory()->create([
+        $tkKey = TranslationKey::factory()->create([
             'group_id' => $jsonGroup->id,
-            'key'      => 'Welcome to our app',
+            'key' => 'Welcome to our app',
         ]);
 
         Translation::factory()->reviewed('Bienvenue sur notre application.')->create([
             'translation_key_id' => $tkKey->id,
-            'language_id'        => $language->id,
+            'language_id' => $language->id,
         ]);
 
         $jsonRequest = new TranslationRequest(
