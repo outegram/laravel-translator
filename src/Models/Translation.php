@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Syriable\Translator\Models;
 
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -13,6 +14,7 @@ use Override;
 use Syriable\Translator\Database\Factories\TranslationFactory;
 use Syriable\Translator\Enums\TranslationStatus;
 use Syriable\Translator\Models\Concerns\HasTranslatorTable;
+use Syriable\Translator\Observers\TranslationObserver;
 
 /**
  * Represents the translated value for a single TranslationKey in a single Language.
@@ -41,6 +43,7 @@ use Syriable\Translator\Models\Concerns\HasTranslatorTable;
  * @method static Builder<Translation> source()
  * @method static Builder<Translation> forLocale(string $code)
  */
+#[ObservedBy(TranslationObserver::class)]
 final class Translation extends Model
 {
     use HasFactory;

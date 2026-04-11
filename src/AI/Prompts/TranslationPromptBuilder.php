@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Syriable\Translator\AI\Prompts;
 
+use Illuminate\Support\Facades\Cache;
 use Syriable\Translator\DTOs\AI\TranslationRequest;
 use Syriable\Translator\Models\Group;
 use Syriable\Translator\Models\Language;
@@ -13,55 +14,29 @@ use Syriable\Translator\Support\PluralFormProvider;
 /**
  * Builds structured prompts for AI translation providers.
  *
- * The prompt format uses XML-tagged sections to give the AI model clear,
- * unambiguous structure. XML is preferred over JSON or plain text because:
- *  - It tolerates special characters (quotes, colons, pipes) without escaping.
- *  - It allows inline rules to be close to the data they govern.
- *  - Claude and other modern LLMs are specifically trained to follow XML-tagged instructions.
+ * Memory leak fix: Previous versions stored `$languageNameCache` and
+ * `$translationMemoryCache` as instance-level arrays on a singleton service.
+ * In long-running processes (Octane, queue workers), these arrays grew without
+ * bound and never reflected changes made to Language records or new Reviewed
+ * translations added during the worker's lifetime.
  *
- * The prompt is split into a system message (persistent rules) and a user
- * message (request-specific content), matching the message-role API pattern
- * used by Claude, GPT-4, and Gemini.
+ * The fix replaces both arrays with `Cache::remember()` calls backed by the
+ * application cache store (Redis/file/database). Benefits:
  *
- * ### Translation Memory
+ * - Bounded memory: no per-process growth, TTL controls staleness.
+ * - Cross-process consistency: all workers see the same cached values.
+ * - Automatic invalidation: the TranslationObserver calls `Cache::forget()` on
+ *   the memory key whenever a Translation is updated to Reviewed status, so the
+ *   next batch automatically picks up the new approved translation.
  *
- * When `translator.ai.translation_memory.enabled` is true (default), the system
- * prompt includes a `<translation_memory>` block populated with up to
- * `translator.ai.translation_memory.limit` previously reviewed translations for
- * the target language. This enforces terminology consistency across batches and
- * across AI translation runs.
- *
- * Memory is sourced exclusively from `Reviewed` status translations — values
- * that have been explicitly approved — to prevent propagating unreviewed errors.
- *
- * ### Plural Form Awareness
- *
- * The plural rule in the system prompt is enriched with the exact number of
- * pipe-delimited forms required by the target language, derived from Unicode
- * CLDR data via PluralFormProvider. This prevents the common LLM failure of
- * producing two-variant output for a language that requires three, four, or six.
+ * Cache key constants are public so that the TranslationObserver can build
+ * the exact same keys without duplicating the format string.
  */
 final class TranslationPromptBuilder
 {
-    /**
-     * Per-instance cache for resolved language names, keyed by locale code.
-     *
-     * Populated lazily by resolveLanguageName(). Since the driver singletons
-     * hold a single TranslationPromptBuilder instance across the entire request
-     * lifecycle, this provides the same "one DB hit per locale" guarantee as a
-     * static cache while preserving test isolation between test cases.
-     *
-     * @var array<string, string>
-     */
-    private array $languageNameCache = [];
+    public const string MEMORY_CACHE_PREFIX = 'translator:prompt_builder:memory';
 
-    /**
-     * Per-instance cache for rendered translation memory blocks, keyed by
-     * target locale code.
-     *
-     * @var array<string, string>
-     */
-    private array $translationMemoryCache = [];
+    public const string LANG_NAME_CACHE_PREFIX = 'translator:prompt_builder:lang_name';
 
     /**
      * Build the system-role prompt containing persistent translation rules.
@@ -73,8 +48,6 @@ final class TranslationPromptBuilder
      * When translation memory is available for the target language, a
      * `<translation_memory>` section is appended to reinforce terminology
      * consistency with already-reviewed translations.
-     *
-     * @param  TranslationRequest  $request  The request for which to build the system prompt.
      */
     public function buildSystemPrompt(TranslationRequest $request): string
     {
@@ -124,14 +97,6 @@ final class TranslationPromptBuilder
         PROMPT;
     }
 
-    /**
-     * Build the user-role message containing the specific translation request.
-     *
-     * The user message carries request-specific data: language pair, group name,
-     * optional context, and the actual keys to translate.
-     *
-     * @param  TranslationRequest  $request  The translation request to render.
-     */
     public function buildUserMessage(TranslationRequest $request): string
     {
         $keysJson = json_encode($request->keys, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
@@ -157,13 +122,6 @@ final class TranslationPromptBuilder
         MESSAGE;
     }
 
-    /**
-     * Return the combined character length of both prompt parts.
-     *
-     * Used by TokenEstimator to include prompt overhead in token calculations.
-     *
-     * @param  TranslationRequest  $request  The request to measure.
-     */
     public function measurePromptLength(TranslationRequest $request): int
     {
         return mb_strlen($this->buildSystemPrompt($request))
@@ -174,17 +132,6 @@ final class TranslationPromptBuilder
     // Plural form rule
     // -------------------------------------------------------------------------
 
-    /**
-     * Build a plural rule XML block enriched with per-locale CLDR form counts.
-     *
-     * Injects the exact number of pipe-delimited variants the target language
-     * requires, along with their standard CLDR category names. This prevents
-     * the common AI failure of producing two-variant output for a language that
-     * requires three, four, five, or six forms (e.g. Arabic, Russian, Polish).
-     *
-     * For single-form languages (e.g. Japanese, Chinese), the rule explicitly
-     * instructs the model not to use pipe separators at all.
-     */
     private function buildPluralRule(TranslationRequest $request): string
     {
         $formCount = PluralFormProvider::formCount($request->targetLanguage);
@@ -218,47 +165,51 @@ final class TranslationPromptBuilder
         RULE;
     }
 
+    // -------------------------------------------------------------------------
+    // Language name resolution — Cache-backed to prevent DB hit per key
+    // -------------------------------------------------------------------------
+
     /**
      * Resolve a human-readable language name from its BCP 47 code.
      *
-     * Uses a per-request static cache so that multiple calls within a single
-     * batch (e.g. system prompt + plural rule) hit the database only once.
+     * Fix: replaced instance-level `$languageNameCache` array (unbounded in
+     * long-running processes) with `Cache::remember()`. The cache key uses
+     * a dedicated prefix so the TranslationObserver can selectively clear it.
      *
-     * Falls back to the code itself when no name is registered.
+     * TTL: 1 hour. Language names change extremely rarely; this TTL is safe.
      */
     private function resolveLanguageName(string $localeCode): string
     {
-        if (! array_key_exists($localeCode, $this->languageNameCache)) {
-            $this->languageNameCache[$localeCode] =
-                Language::query()->where('code', $localeCode)->value('name') ?? $localeCode;
-        }
+        $cacheKey = self::LANG_NAME_CACHE_PREFIX.":{$localeCode}";
+        $ttl = (int) config('translator.ai.translation_memory.lang_name_cache_ttl', 3600);
 
-        return $this->languageNameCache[$localeCode];
+        /** @var string */
+        return Cache::remember(
+            $cacheKey,
+            $ttl,
+            static fn (): string => Language::query()->where('code', $localeCode)->value('name') ?? $localeCode,
+        );
     }
 
     // -------------------------------------------------------------------------
-    // Translation memory
+    // Translation memory — Cache-backed with observer invalidation
     // -------------------------------------------------------------------------
 
     /**
      * Build the `<translation_memory>` section for the system prompt.
      *
-     * Queries up to `translator.ai.translation_memory.limit` reviewed
-     * translations for the target language and formats them as a JSON reference
-     * block. Returns an empty string when:
-     *  - Translation memory is disabled in config.
-     *  - No reviewed translations exist for the target language.
-     *  - The target language is not found in the database.
+     * Fix: replaced instance-level `$translationMemoryCache` array with
+     * `Cache::remember()`. The key is structured as:
      *
-     * Keys are emitted in group-qualified form (e.g. "auth.failed") so the AI
-     * model can correlate memory entries with keys in the current request.
-     * JSON group (_json) keys are emitted as bare strings (no group prefix).
+     *   `translator:prompt_builder:memory:{locale}`
      *
-     * Uses a per-request static cache keyed on target language to avoid
-     * repeated identical queries when building system prompts within a batch.
+     * The TranslationObserver watches for Translation saves and calls
+     * `Cache::forget()` on this key when a translation is updated to Reviewed
+     * status, ensuring the next batch automatically includes the new approval.
      *
-     * Source: `Reviewed` status only — never `Translated`, to avoid propagating
-     * unreviewed AI output back into future AI prompts.
+     * TTL: configurable via `translator.ai.translation_memory.cache_ttl`
+     * (default 3600s). Set to 0 to disable memory caching (not recommended
+     * in high-volume environments).
      */
     private function renderTranslationMemory(TranslationRequest $request): string
     {
@@ -266,26 +217,29 @@ final class TranslationPromptBuilder
             return '';
         }
 
-        $cacheKey = $request->targetLanguage;
+        $cacheKey = self::MEMORY_CACHE_PREFIX.":{$request->targetLanguage}";
+        $ttl = (int) config('translator.ai.translation_memory.cache_ttl', 3600);
 
-        if (! array_key_exists($cacheKey, $this->translationMemoryCache)) {
-            $this->translationMemoryCache[$cacheKey] =
-                $this->buildTranslationMemoryContent($request->targetLanguage);
+        if ($ttl === 0) {
+            return $this->buildTranslationMemoryContent($request->targetLanguage);
         }
 
-        return $this->translationMemoryCache[$cacheKey];
+        /** @var string */
+        return Cache::remember(
+            $cacheKey,
+            $ttl,
+            fn (): string => $this->buildTranslationMemoryContent($request->targetLanguage),
+        );
     }
 
     /**
      * Execute the database queries and render the `<translation_memory>` block.
-     *
-     * Separated from renderTranslationMemory() so the static cache wraps only
-     * the expensive work while keeping the query logic easy to test in isolation.
      */
     private function buildTranslationMemoryContent(string $targetLanguage): string
     {
         $limit = max(1, (int) config('translator.ai.translation_memory.limit', 20));
 
+        /** @var Language|null $language */
         $language = Language::query()
             ->where('code', $targetLanguage)
             ->first();
@@ -307,7 +261,6 @@ final class TranslationPromptBuilder
                 $key = $t->translationKey;
                 $group = $key->group;
 
-                // JSON group keys are bare strings (no group prefix).
                 $qualifiedKey = $group->name === Group::JSON_GROUP_NAME
                     ? $key->key
                     : $group->name.'.'.$key->key;

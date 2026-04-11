@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Syriable\Translator;
 
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Translation\Loader;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use Syriable\Translator\AI\Estimators\TokenEstimator;
@@ -28,6 +29,7 @@ use Syriable\Translator\Services\Scanner\FileWalker;
 use Syriable\Translator\Services\Scanner\TranslationKeyScanner;
 use Syriable\Translator\Services\Scanner\TranslationUsageExtractor;
 use Syriable\Translator\Services\TranslationKeyReplicator;
+use Syriable\Translator\Translation\DatabaseTranslationLoader;
 
 class TranslatorServiceProvider extends PackageServiceProvider
 {
@@ -46,6 +48,11 @@ class TranslatorServiceProvider extends PackageServiceProvider
                 Commands\QueueDiagnosticCommand::class,
                 Commands\ScanCommand::class,
                 Commands\PruneLogsCommand::class,
+                Commands\CoverageCommand::class,
+                Commands\LanguagesCommand::class,
+                Commands\ReviewCommand::class,
+                Commands\DiffCommand::class,
+                Commands\ProviderCheckCommand::class,
             ]);
     }
 
@@ -60,6 +67,7 @@ class TranslatorServiceProvider extends PackageServiceProvider
 
     public function packageBooted(): void
     {
+        $this->registerTranslationLoader();
         $this->registerSchedule();
     }
 
@@ -94,11 +102,15 @@ class TranslatorServiceProvider extends PackageServiceProvider
     }
 
     /**
-     * The TranslationProviderManager and AITranslationService are singletons so
-     * resolved driver instances are cached across service calls in one request.
+     * Register AI services as singletons so driver instances are cached
+     * across the full request lifecycle.
      *
-     * The facade accessor (`translator`) is bound here so that Translator::estimate()
-     * and Translator::translate() resolve to the same singleton instance.
+     * IMPORTANT: Contract aliases point to their concrete singleton via `alias()`.
+     * Do not register `AITranslationService` under the `translator` string key:
+     * that name is reserved for Laravel's {@see \Illuminate\Translation\Translator}
+     * (used by `loadTranslationsFrom()`, `__()`, etc.).
+     *
+     * The package facade resolves {@see AITranslationServiceContract::class}.
      */
     private function registerAiServices(): void
     {
@@ -116,8 +128,6 @@ class TranslatorServiceProvider extends PackageServiceProvider
                 providerManager: $app->make(TranslationProviderManager::class),
             ),
         );
-
-        $this->app->alias(AITranslationService::class, 'translator');
     }
 
     private function registerScannerServices(): void
@@ -135,17 +145,44 @@ class TranslatorServiceProvider extends PackageServiceProvider
     }
 
     /**
-     * Bind public contracts to their concrete implementations.
+     * Bind public contracts to their concrete singleton implementations using
+     * `alias()`. This guarantees that any resolution path — direct class,
+     * contract interface, or facade — returns the SAME singleton instance.
      *
-     * Companion packages should type-hint against these contracts rather than
-     * concrete classes. This keeps the companion decoupled from implementation
-     * details and allows the underlying service to be swapped or extended.
+     * Do NOT use `bind()` here; it would create a transient and break the
+     * singleton guarantee that prevents repeated provider instantiation.
      */
     private function registerContracts(): void
     {
-        $this->app->bind(TranslationImporterContract::class, TranslationImporter::class);
-        $this->app->bind(TranslationExporterContract::class, TranslationExporter::class);
-        $this->app->bind(AITranslationServiceContract::class, AITranslationService::class);
+        // Fix: use alias() so the contract resolves to the existing singleton,
+        // not a freshly-constructed transient object.
+        $this->app->alias(AITranslationService::class, AITranslationServiceContract::class);
+        $this->app->alias(TranslationImporter::class, TranslationImporterContract::class);
+        $this->app->alias(TranslationExporter::class, TranslationExporterContract::class);
+    }
+
+    // -------------------------------------------------------------------------
+    // Runtime Translation Loader
+    // -------------------------------------------------------------------------
+
+    /**
+     * Replace Laravel's file-based translation loader with our database-backed
+     * loader when `translator.loader.enabled` is true.
+     *
+     * The DatabaseTranslationLoader wraps the existing file loader, so it can
+     * fall back to file-based loading when the DB returns no results (useful
+     * during the initial import phase or in testing environments).
+     */
+    private function registerTranslationLoader(): void
+    {
+        if (! config('translator.loader.enabled', false)) {
+            return;
+        }
+
+        $this->app->extend(
+            'translation.loader',
+            static fn (Loader $fileLoader, $app): DatabaseTranslationLoader => new DatabaseTranslationLoader($fileLoader),
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -153,11 +190,8 @@ class TranslatorServiceProvider extends PackageServiceProvider
     // -------------------------------------------------------------------------
 
     /**
-     * Register translator:prune-logs with the Laravel scheduler.
-     *
-     * Runs weekly when log_retention_days > 0. Consumers can override the
-     * schedule by adding their own definition in routes/console.php. Set
-     * TRANSLATOR_LOG_RETENTION_DAYS=0 to disable automatic pruning.
+     * Register translator:prune-logs with the Laravel scheduler (weekly) when
+     * log retention is enabled. No manual scheduling required by the application.
      */
     private function registerSchedule(): void
     {

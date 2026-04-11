@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace Syriable\Translator\Console\Commands;
 
+use Illuminate\Bus\Batch;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Syriable\Translator\AI\TranslationProviderManager;
 use Syriable\Translator\Console\Concerns\DisplayHelper;
 use Syriable\Translator\DTOs\AI\TranslationEstimate;
@@ -13,11 +17,9 @@ use Syriable\Translator\DTOs\AI\TranslationResponse;
 use Syriable\Translator\Exceptions\AI\ProviderAuthenticationException;
 use Syriable\Translator\Exceptions\AI\TranslationProviderException;
 use Syriable\Translator\Jobs\TranslateKeysJob;
-use Syriable\Translator\Models\Group;
 use Syriable\Translator\Models\Language;
 use Syriable\Translator\Models\TranslationKey;
 use Syriable\Translator\Services\AI\AITranslationService;
-use Throwable;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
@@ -29,23 +31,24 @@ use function Laravel\Prompts\warning;
 /**
  * Artisan command that AI-translates missing translation keys.
  *
- * Enforces the "no execution without cost preview" rule:
- *  1. Builds the translation request from user input.
- *  2. Estimates token usage and cost WITHOUT making any API call.
- *  3. Displays the full estimate breakdown to the user.
- *  4. Requires explicit confirmation before proceeding.
- *  5. Executes translation synchronously or dispatches to the queue.
+ * Key improvements in this version:
  *
- * Queue usage:
- *   php artisan translator:ai-translate --target=ar --queue
- *   php artisan queue:work                         ← required in a separate process
+ * 1. N+1 fix: `resolveUntranslatedKeys()` now uses `chunkById()` instead of
+ *    `cursor()`. Laravel's cursor() does not honour eager loading — each model
+ *    triggers separate queries for `translations` and `group`. With chunkById(),
+ *    the `with()` constraints are applied per chunk (500 rows → 3 queries per
+ *    chunk instead of 2n + 1).
  *
- * Usage:
- *   php artisan translator:ai-translate --target=ar
- *   php artisan translator:ai-translate --target=ar --group=auth
- *   php artisan translator:ai-translate --target=ar --provider=claude --queue
- *   php artisan translator:ai-translate --target=ar --force --no-interaction
- *   php artisan translator:ai-translate --target=ar --fresh-cache
+ * 2. Concurrency protection: A Cache lock prevents two simultaneous runs for the
+ *    same target language from duplicating API calls and wasting budget.
+ *
+ * 3. No global config mutation: The previous `--fresh-cache` implementation called
+ *    `config(['translator.ai.cache.enabled' => false])`, which corrupted the cache
+ *    state for any other code running in the same process (Octane, queue workers).
+ *    Now `bypassCache = true` is passed explicitly as a method parameter.
+ *
+ * 4. Job batching: `--queue` dispatches jobs via `Bus::batch()` for Horizon
+ *    visibility, progress tracking, and proper failure aggregation.
  */
 final class AITranslateCommand extends Command
 {
@@ -58,7 +61,8 @@ final class AITranslateCommand extends Command
         {--provider=      : AI provider to use (e.g. claude). Defaults to configured default.}
         {--queue          : Dispatch translation jobs to the queue instead of running synchronously.}
         {--force          : Skip the cost confirmation prompt (use with caution in CI).}
-        {--fresh-cache    : Ignore the translation cache and force a fresh API call for all keys.}';
+        {--fresh-cache    : Bypass the translation cache and force a fresh API call for all keys.}
+        {--no-lock        : Skip the concurrency lock (useful in CI when parallel runs are intentional).}';
 
     protected $description = 'AI-translate missing translation keys using Claude or another configured provider';
 
@@ -69,7 +73,7 @@ final class AITranslateCommand extends Command
         $this->displayHeader('AI Translate');
 
         try {
-            return $this->executeTranslation($service, $manager);
+            return $this->executeWithLock($service, $manager);
         } catch (ProviderAuthenticationException $e) {
             error($e->getMessage());
             $this->line('  Set your API key in .env: ANTHROPIC_API_KEY=sk-ant-...');
@@ -79,6 +83,50 @@ final class AITranslateCommand extends Command
             error($e->getMessage());
 
             return self::FAILURE;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Concurrency Lock
+    // -------------------------------------------------------------------------
+
+    /**
+     * Acquire a per-language cache lock before running the translation pipeline.
+     *
+     * This prevents two simultaneous `translator:ai-translate --target=ar` commands
+     * from both discovering the same untranslated keys, making duplicate API calls,
+     * and wasting the translation budget.
+     *
+     * The lock is released in a `finally` block, so it is always freed even if
+     * the translation throws an exception or exits early.
+     *
+     * Skip with `--no-lock` for CI pipelines that intentionally run parallel jobs
+     * for different language batches under the same target.
+     */
+    private function executeWithLock(
+        AITranslationService $service,
+        TranslationProviderManager $manager,
+    ): int {
+        $target = $this->option('target') ?: 'unknown';
+
+        if ($this->option('no-lock')) {
+            return $this->executeTranslation($service, $manager);
+        }
+
+        $lockKey = "translator:ai-translate:{$target}";
+        $lock = Cache::lock($lockKey, seconds: 600);
+
+        if (! $lock->get()) {
+            error("Another AI translation run is already active for [{$target}].");
+            $this->line('  Wait for it to finish, or use --no-lock to bypass this check.');
+
+            return self::FAILURE;
+        }
+
+        try {
+            return $this->executeTranslation($service, $manager);
+        } finally {
+            $lock->release();
         }
     }
 
@@ -95,8 +143,12 @@ final class AITranslateCommand extends Command
         $targetLanguage = $this->resolveTargetLanguage();
         $group = $this->option('group') ?: null;
 
-        if ($this->option('fresh-cache')) {
-            $this->clearTranslationCache($targetLanguage->code);
+        // `--fresh-cache` is now a simple boolean flag passed to the service
+        // rather than a global config mutation. Safe for Octane + queue workers.
+        $bypassCache = (bool) $this->option('fresh-cache');
+
+        if ($bypassCache) {
+            info('Cache bypassed for this run — all keys will use fresh API calls.');
         }
 
         $keys = $this->resolveUntranslatedKeys($targetLanguage, $group);
@@ -113,15 +165,15 @@ final class AITranslateCommand extends Command
 
         $this->displayEstimate($estimate);
 
-        if (! $this->shouldProceed($estimate)) {
+        if (! $this->shouldProceed()) {
             info('Translation cancelled.');
 
             return self::SUCCESS;
         }
 
         return $this->option('queue')
-            ? $this->dispatchToQueue($request, $targetLanguage, $provider, $estimate)
-            : $this->executeDirectly($service, $request, $targetLanguage, $provider, $estimate);
+            ? $this->dispatchToQueue($request, $targetLanguage, $provider, $estimate, $bypassCache)
+            : $this->executeDirectly($service, $request, $targetLanguage, $provider, $estimate, $bypassCache);
     }
 
     // -------------------------------------------------------------------------
@@ -148,6 +200,8 @@ final class AITranslateCommand extends Command
     private function resolveSourceLanguage(): Language
     {
         $code = $this->option('source') ?: config('translator.source_language', 'en');
+
+        /** @var Language|null $language */
         $language = Language::query()->where('code', $code)->first();
 
         if ($language === null) {
@@ -176,9 +230,11 @@ final class AITranslateCommand extends Command
                 $this->fail('No active non-source languages found. Run translator:import first.');
             }
 
+            /** @var string $code */
             $code = select(label: 'Select target language', options: $available);
         }
 
+        /** @var Language|null $language */
         $language = Language::query()->where('code', $code)->active()->first();
 
         if ($language === null) {
@@ -189,97 +245,66 @@ final class AITranslateCommand extends Command
     }
 
     // -------------------------------------------------------------------------
-    // Cache Management
-    // -------------------------------------------------------------------------
-
-    /**
-     * Clear the AI translation cache for the given target locale.
-     *
-     * This forces a fresh API call for all keys, overriding any previously
-     * cached translations. Useful when source strings have changed.
-     */
-    private function clearTranslationCache(string $localeCode): void
-    {
-        warning("Clearing AI translation cache for [{$localeCode}]...");
-
-        // Laravel's cache doesn't support pattern-based deletion on all stores.
-        // We flush the entire AI cache prefix by tagging (when supported) or
-        // advise the user to flush manually for non-tag-supporting stores.
-        $store = config('translator.ai.cache.store');
-
-        try {
-            $cache = cache()->store($store);
-
-            if (method_exists($cache, 'tags')) {
-                $cache->tags(['translator_ai', "translator_ai_{$localeCode}"])->flush();
-                info("Cache cleared for [{$localeCode}].");
-            } else {
-                // For stores without tag support (file, database), we cannot
-                // selectively clear by prefix without iterating all keys.
-                // Disable cache for this run instead.
-                config(['translator.ai.cache.enabled' => false]);
-                info('Cache bypassed for this run (store does not support tag-based clearing).');
-            }
-        } catch (Throwable) {
-            config(['translator.ai.cache.enabled' => false]);
-            info('Cache bypassed for this run.');
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Key Discovery
+    // Key Discovery — N+1 Fix
     // -------------------------------------------------------------------------
 
     /**
      * Retrieve all untranslated key-value pairs for the target language.
      *
-     * A key is included when:
-     *  - The source language has a non-null value for it.
-     *  - The target language has no translation row, or has a null value,
-     *    or has Untranslated status.
+     * IMPORTANT: The previous implementation used `cursor()` with `with()`, which
+     * does NOT eager-load relationships. Eloquent's cursor() streams one model at
+     * a time via a generator; the `with()` constraint is effectively ignored and
+     * every model triggers separate queries for `translations` and `group`.
+     *
+     * The fix uses `chunkById(500)`, which processes rows in batches of 500. The
+     * `with()` eager load is applied correctly per chunk, reducing query count from
+     * O(2n) to O(ceil(n/500) * 3) regardless of dataset size.
      *
      * @return array<string, string> key => source value pairs.
      */
     private function resolveUntranslatedKeys(Language $targetLanguage, ?string $groupFilter): array
     {
+        /** @var Language|null $sourceLanguage */
         $sourceLanguage = Language::query()->where('is_source', true)->first();
 
         if ($sourceLanguage === null) {
             $this->fail('No source language configured. Run translator:import first.');
         }
 
-        $query = TranslationKey::query()->with([
-            'translations' => fn ($q) => $q->whereIn('language_id', [
-                $sourceLanguage->id,
-                $targetLanguage->id,
-            ]),
-            'group',
-        ]);
-
-        if ($groupFilter) {
-            $query->whereHas('group', fn ($q) => $q->where('name', $groupFilter));
-        }
-
         $keys = [];
 
-        foreach ($query->cursor() as $translationKey) {
-            $sourceTranslation = $translationKey->translations
-                ->firstWhere('language_id', $sourceLanguage->id);
+        TranslationKey::query()
+            ->with([
+                'translations' => fn ($q) => $q->whereIn('language_id', [
+                    $sourceLanguage->id,
+                    $targetLanguage->id,
+                ]),
+                'group',
+            ])
+            ->when(
+                $groupFilter,
+                fn ($q) => $q->whereHas('group', fn ($q) => $q->where('name', $groupFilter)),
+            )
+            ->chunkById(500, function (Collection $chunk) use ($sourceLanguage, $targetLanguage, &$keys): void {
+                foreach ($chunk as $translationKey) {
+                    $sourceTranslation = $translationKey->translations
+                        ->firstWhere('language_id', $sourceLanguage->id);
 
-            $targetTranslation = $translationKey->translations
-                ->firstWhere('language_id', $targetLanguage->id);
+                    $targetTranslation = $translationKey->translations
+                        ->firstWhere('language_id', $targetLanguage->id);
 
-            if (
-                $sourceTranslation?->value !== null
-                && (
-                    $targetTranslation === null
-                    || $targetTranslation->value === null
-                    || $targetTranslation->status->value === 'untranslated'
-                )
-            ) {
-                $keys[$translationKey->key] = $sourceTranslation->value;
-            }
-        }
+                    if (
+                        $sourceTranslation?->value !== null
+                        && (
+                            $targetTranslation === null
+                            || $targetTranslation->value === null
+                            || $targetTranslation->status->value === 'untranslated'
+                        )
+                    ) {
+                        $keys[$translationKey->key] = $sourceTranslation->value;
+                    }
+                }
+            });
 
         return $keys;
     }
@@ -322,48 +347,42 @@ final class AITranslateCommand extends Command
         );
     }
 
-    /**
-     * Request explicit confirmation before executing.
-     *
-     * Skipped when --force is passed or in non-interactive mode (CI, cron).
-     */
-    private function shouldProceed(TranslationEstimate $estimate): bool
+    private function shouldProceed(): bool
     {
         if ($this->option('force') || ! $this->input->isInteractive()) {
             return true;
         }
 
-        return confirm(
-            label: 'Proceed with translation?',
-            default: false,
-        );
+        return confirm(label: 'Proceed with translation?', default: false);
     }
 
     // -------------------------------------------------------------------------
-    // Execution
+    // Queue Execution — Bus::batch()
     // -------------------------------------------------------------------------
 
     /**
-     * Dispatch translation jobs to the queue in batches.
+     * Dispatch translation jobs as a Laravel Bus batch.
      *
-     * IMPORTANT: After dispatching, you must run a queue worker to process
-     * the jobs:
+     * Using Bus::batch() instead of individual dispatches provides:
+     * - Horizon visibility: batch progress is trackable in the dashboard.
+     * - Failure aggregation: `allowFailures()` lets partial batches complete.
+     * - Completion callbacks: hook into `->then()` for post-batch notifications.
      *
-     *   php artisan queue:work
-     *   php artisan queue:work --queue=translations   (if TRANSLATOR_AI_QUEUE=translations)
-     *
-     * Jobs will not execute until a worker processes them.
+     * The `bypassCache` flag is carried into each job so that `--fresh-cache`
+     * works correctly for queued runs without mutating global config.
      */
     private function dispatchToQueue(
         TranslationRequest $request,
         Language $targetLanguage,
         string $provider,
         TranslationEstimate $estimate,
+        bool $bypassCache,
     ): int {
         $batchSize = (int) config('translator.ai.batch_size', 50);
         $chunks = array_chunk($request->keys, $batchSize, preserve_keys: true);
-        $jobCount = count($chunks);
-        $queueName = config('translator.ai.queue', 'default');
+        $queueName = (string) config('translator.ai.queue', 'default');
+
+        $jobs = [];
 
         foreach ($chunks as $chunk) {
             $chunkRequest = new TranslationRequest(
@@ -376,49 +395,55 @@ final class AITranslateCommand extends Command
                 context: $request->context,
             );
 
-            TranslateKeysJob::dispatch($chunkRequest, $targetLanguage, $provider)
+            $jobs[] = TranslateKeysJob::make($chunkRequest, $targetLanguage, $provider, $bypassCache)
                 ->onQueue($queueName);
         }
 
+        $jobCount = count($jobs);
+        $batchName = "AI Translate [{$targetLanguage->code}] — {$request->keyCount()} keys";
+
+        $batch = Bus::batch($jobs)
+            ->name($batchName)
+            ->allowFailures()
+            ->dispatch();
+
         $this->newLine();
-        info("✅ Dispatched {$jobCount} translation job(s) to the [{$queueName}] queue.");
+        info("✅ Dispatched batch [{$batch->id}] with {$jobCount} job(s) to the [{$queueName}] queue.");
         $this->newLine();
 
         $this->table(
             headers: ['Detail', 'Value'],
             rows: [
-                ['Jobs dispatched',  $jobCount],
-                ['Keys per batch',   $batchSize],
-                ['Total keys',       count($request->keys)],
+                ['Batch ID',         $batch->id],
+                ['Jobs dispatched',  (string) $jobCount],
+                ['Keys per batch',   (string) $batchSize],
+                ['Total keys',       (string) count($request->keys)],
                 ['Target language',  $request->targetLanguage],
                 ['Queue name',       $queueName],
                 ['Estimated cost',   $estimate->formattedCost()],
+                ['Cache bypassed',   $bypassCache ? 'Yes' : 'No'],
             ],
         );
 
         $this->newLine();
         warning('Jobs are queued but NOT yet processed.');
-        $this->line('  Run the queue worker to execute them:');
-        $this->newLine();
-        $this->line("    <comment>php artisan queue:work --queue={$queueName}</comment>");
-        $this->newLine();
-        $this->line('  Or process all queues:');
-        $this->newLine();
-        $this->line('    <comment>php artisan queue:work</comment>');
+        $this->line("  Run the worker: <comment>php artisan queue:work --queue={$queueName}</comment>");
         $this->newLine();
 
         return self::SUCCESS;
     }
 
-    /**
-     * Execute translation synchronously, showing a spinner per batch.
-     */
+    // -------------------------------------------------------------------------
+    // Synchronous Execution
+    // -------------------------------------------------------------------------
+
     private function executeDirectly(
         AITranslationService $service,
         TranslationRequest $request,
         Language $targetLanguage,
         string $provider,
         TranslationEstimate $estimate,
+        bool $bypassCache,
     ): int {
         $batchSize = (int) config('translator.ai.batch_size', 50);
         $chunks = array_chunk($request->keys, $batchSize, preserve_keys: true);
@@ -430,6 +455,7 @@ final class AITranslateCommand extends Command
 
         foreach ($chunks as $index => $chunk) {
             $chunkNumber = $index + 1;
+
             $chunkRequest = new TranslationRequest(
                 sourceLanguage: $request->sourceLanguage,
                 targetLanguage: $request->targetLanguage,
@@ -440,12 +466,14 @@ final class AITranslateCommand extends Command
                 context: $request->context,
             );
 
+            /** @var TranslationResponse $response */
             $response = spin(
                 callback: static fn (): TranslationResponse => $service->translate(
                     request: $chunkRequest,
                     language: $targetLanguage,
                     provider: $provider,
                     estimate: $index === 0 ? $estimate : null,
+                    bypassCache: $bypassCache,
                 ),
                 message: "Translating batch {$chunkNumber}/{$totalChunks}...",
             );
@@ -459,7 +487,7 @@ final class AITranslateCommand extends Command
             }
         }
 
-        $this->displayExecutionSummary($totalTranslated, $totalFailed, $totalCost, $fromCache);
+        $this->displayExecutionSummary($totalTranslated, $totalFailed, $totalCost, $fromCache, $bypassCache);
 
         return $totalFailed > 0 ? self::FAILURE : self::SUCCESS;
     }
@@ -473,6 +501,7 @@ final class AITranslateCommand extends Command
         int $failed,
         float $cost,
         int $fromCache,
+        bool $bypassCache,
     ): void {
         $this->newLine();
         info('✅ Translation complete');
@@ -482,11 +511,11 @@ final class AITranslateCommand extends Command
         $this->table(
             headers: ['Metric', 'Value'],
             rows: [
-                ['Keys translated',    (string) $translated],
-                ['  From API',         (string) $fromApi],
-                ['  From cache',       (string) $fromCache],
-                ['Keys failed',        (string) $failed],
-                ['Actual cost',        '$'.number_format($cost, 4)],
+                ['Keys translated', (string) $translated],
+                ['  From API',      (string) $fromApi],
+                ['  From cache',    $bypassCache ? 'Bypassed' : (string) $fromCache],
+                ['Keys failed',     (string) $failed],
+                ['Actual cost',     '$'.number_format($cost, 4)],
             ],
         );
 
@@ -494,7 +523,7 @@ final class AITranslateCommand extends Command
             warning("{$failed} key(s) could not be translated. Re-run to retry failed keys.");
         }
 
-        if ($fromCache > 0) {
+        if ($fromCache > 0 && ! $bypassCache) {
             info("{$fromCache} key(s) served from cache (no API cost). Use --fresh-cache to bypass.");
         }
     }

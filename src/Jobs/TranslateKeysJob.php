@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Syriable\Translator\Jobs;
 
+use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -16,65 +17,54 @@ use Syriable\Translator\Services\AI\AITranslationService;
 /**
  * Queued job that executes a single AI translation request batch.
  *
- * Stores only serializable primitives — no Eloquent models, no readonly DTOs.
- * TranslationRequest and Language are reconstructed inside handle() from plain
- * data, avoiding every PHP serialization edge case:
+ * Key changes in this version:
  *
- * - SerializesModels::__sleep() tries to replace model instances with
- *   ModelIdentifier objects by doing $this->language = new ModelIdentifier(...).
- *   On a readonly property this throws "Cannot modify readonly property"
- *   and the job is silently dropped — never written to the queue.
+ * 1. `Batchable` trait added: enables Bus::batch() support and provides
+ *    `$this->batch()` for cancellation checks. Horizon can now track progress
+ *    at the batch level, not just individual job level.
  *
- * - readonly class (PHP 8.2) cannot have its properties re-assigned in
- *   __wakeup(), so any DTO declared as `final readonly class` also fails.
+ * 2. `$bypassCache` field: carries the `--fresh-cache` flag from the command
+ *    into each job without mutating global config. The flag is passed through
+ *    to AITranslationService::translate() as an explicit parameter.
  *
- * Storing plain arrays and scalars sidesteps all of this completely.
+ * 3. Static `make()` factory: provides a clean construction API that handles
+ *    the DTO-to-primitive decomposition in one place.
+ *
+ * 4. Batch cancellation guard: checks if the parent batch was cancelled before
+ *    making any API call, preventing wasted requests when a batch fails early.
+ *
+ * NOTE: SerializesModels is intentionally NOT used. It calls __sleep() which
+ * tries to reassign readonly properties — this throws "Cannot modify readonly
+ * property" and silently drops the job from the queue.
  */
 final class TranslateKeysJob implements ShouldQueue
 {
+    use Batchable;
     use Dispatchable;
     use InteractsWithQueue;
     use Queueable;
 
-    // Note: SerializesModels is intentionally NOT used here.
-    // It calls __sleep() which tries to overwrite readonly properties — this
-    // throws "Cannot modify readonly property" and silently drops the job.
-
-    /**
-     * Maximum number of attempts before the job is marked as failed.
-     */
     public int $tries = 3;
 
-    /**
-     * Maximum execution time in seconds before the job is killed.
-     */
     public int $timeout = 180;
 
     /**
      * Plain array representation of TranslationRequest.
-     * Stored as an array to avoid readonly class serialization issues.
+     * Stored as primitives to avoid readonly class serialization issues.
      *
      * @var array<string, mixed>
      */
     public array $requestData;
 
-    /**
-     * The target language ID. Re-fetched from the DB inside handle()
-     * so the Language model is never serialized.
-     */
+    /** Target Language ID — re-fetched from DB in handle() to avoid SerializesModels. */
     public int $languageId;
 
-    /**
-     * @param  TranslationRequest  $request  The translation batch to process.
-     * @param  Language  $language  The target language — stored as ID only.
-     * @param  string|null  $provider  Provider override, or null for the default.
-     */
     public function __construct(
         TranslationRequest $request,
         Language $language,
         public ?string $provider = null,
+        public bool $bypassCache = false,
     ) {
-        // Decompose to plain primitives for safe serialization.
         $this->requestData = [
             'sourceLanguage' => $request->sourceLanguage,
             'targetLanguage' => $request->targetLanguage,
@@ -89,17 +79,40 @@ final class TranslateKeysJob implements ShouldQueue
     }
 
     /**
+     * Static factory for readable construction at dispatch sites.
+     *
+     * Usage:
+     *   TranslateKeysJob::make($request, $language, $provider, $bypassCache)
+     *       ->onQueue('translations');
+     */
+    public static function make(
+        TranslationRequest $request,
+        Language $language,
+        ?string $provider = null,
+        bool $bypassCache = false,
+    ): self {
+        return new self($request, $language, $provider, $bypassCache);
+    }
+
+    /**
      * Execute the translation job.
      *
-     * Reconstructs the TranslationRequest DTO and re-fetches the Language
-     * model from the database — both built fresh from stored primitives.
+     * Checks for batch cancellation first — if the parent batch was cancelled
+     * (e.g. due to a fatal failure in a sibling job), skip the API call entirely.
      */
     public function handle(AITranslationService $service): void
     {
+        // Honour batch cancellation: if another job in the batch failed fatally,
+        // skip the API call rather than wasting tokens on a cancelled run.
+        if ($this->batch()?->cancelled()) {
+            return;
+        }
+
+        /** @var Language|null $language */
         $language = Language::query()->find($this->languageId);
 
         if ($language === null) {
-            // Language was deleted after the job was dispatched — nothing to do.
+            // Language was deleted after dispatch — nothing to do.
             return;
         }
 
@@ -119,6 +132,7 @@ final class TranslateKeysJob implements ShouldQueue
                 language: $language,
                 provider: $this->provider,
                 estimate: null,
+                bypassCache: $this->bypassCache,
             );
         } catch (ProviderRateLimitException) {
             // Release with exponential backoff: 60s, 120s, 240s.
@@ -127,9 +141,7 @@ final class TranslateKeysJob implements ShouldQueue
         }
     }
 
-    /**
-     * @return int[] Delay in seconds for each retry attempt.
-     */
+    /** @return int[] Delay in seconds for each retry attempt. */
     public function backoff(): array
     {
         return [60, 120, 240];

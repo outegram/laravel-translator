@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Syriable\Translator\Tests;
 
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Orchestra\Testbench\TestCase as OrchestraTestCase;
 use Syriable\Translator\TranslatorServiceProvider;
 
@@ -15,10 +16,13 @@ use Syriable\Translator\TranslatorServiceProvider;
  */
 abstract class TestCase extends OrchestraTestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
+    use RefreshDatabase;
 
+    /**
+     * Register package and workbench migrations so tables exist before tests run.
+     */
+    protected function defineDatabaseMigrations(): void
+    {
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         $this->loadMigrationsFrom(__DIR__.'/../vendor/orchestra/testbench-core/laravel/migrations');
     }

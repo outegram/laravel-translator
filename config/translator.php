@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Syriable\Translator\Models\AITranslationLog;
 use Syriable\Translator\Models\ExportLog;
 use Syriable\Translator\Models\Group;
 use Syriable\Translator\Models\ImportLog;
@@ -15,10 +16,6 @@ return [
     |--------------------------------------------------------------------------
     | Source Language
     |--------------------------------------------------------------------------
-    |
-    | The locale code of the language that serves as the authoritative source
-    | for all translations. Read by LanguageResolver and TranslationKeyReplicator.
-    |
     */
 
     'source_language' => env('TRANSLATOR_SOURCE_LANGUAGE', 'en'),
@@ -27,10 +24,6 @@ return [
     |--------------------------------------------------------------------------
     | Language Directory Path
     |--------------------------------------------------------------------------
-    |
-    | Absolute path to the Laravel lang directory. Defaults to lang_path()
-    | when null. Read by TranslationImporter and PhpTranslationFileLoader.
-    |
     */
 
     'lang_path' => env('TRANSLATOR_LANG_PATH', null),
@@ -39,10 +32,6 @@ return [
     |--------------------------------------------------------------------------
     | Database Table Prefix
     |--------------------------------------------------------------------------
-    |
-    | Shared prefix for all package tables. Change only before first migration.
-    | Read at runtime by HasTranslatorTable and migration files.
-    |
     */
 
     'table_prefix' => env('TRANSLATOR_TABLE_PREFIX', 'ltu_'),
@@ -51,10 +40,6 @@ return [
     |--------------------------------------------------------------------------
     | Models
     |--------------------------------------------------------------------------
-    |
-    | Override any model with a custom subclass to add behaviour without
-    | modifying package code. Each class must extend the package model.
-    |
     */
 
     'models' => [
@@ -64,6 +49,38 @@ return [
         'translation' => Translation::class,
         'import_log' => ImportLog::class,
         'export_log' => ExportLog::class,
+        'ai_log' => AITranslationLog::class,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Runtime Translation Loader
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, Laravel's `__()` helper and the `Lang` facade will load
+    | translations directly from the database instead of from lang files.
+    |
+    | This removes the requirement to run `translator:export` before updated
+    | translations appear in the application.
+    |
+    | fallback_to_files — when the database returns no results for a locale/group
+    | (e.g. during initial import), fall back to the file-based loader. This
+    | makes the transition transparent: enable the loader, run the import, and
+    | files serve as a safety net in the meantime.
+    |
+    | cache_ttl — seconds to cache each locale/group result. Set to 0 to
+    | disable caching entirely (not recommended in production).
+    |
+    | The TranslationObserver automatically invalidates the cache when a
+    | Translation model is saved or deleted.
+    |
+    */
+
+    'loader' => [
+        'enabled' => env('TRANSLATOR_LOADER_ENABLED', false),
+        'fallback_to_files' => env('TRANSLATOR_LOADER_FALLBACK', true),
+        'cache_ttl' => env('TRANSLATOR_LOADER_CACHE_TTL', 3600),
+        'cache_prefix' => env('TRANSLATOR_LOADER_CACHE_PREFIX', 'translator_loader'),
     ],
 
     /*
@@ -73,28 +90,13 @@ return [
     */
 
     'import' => [
-
-        // Overwrite existing translation values when re-importing.
         'overwrite' => env('TRANSLATOR_IMPORT_OVERWRITE', true),
-
-        // Traverse lang/vendor and import namespaced package translations.
         'scan_vendor' => env('TRANSLATOR_SCAN_VENDOR', true),
-
-        // Extract :param and {param} tokens and store on TranslationKey.
         'detect_parameters' => env('TRANSLATOR_DETECT_PARAMETERS', true),
-
-        // Flag strings containing inline HTML on TranslationKey.
         'detect_html' => env('TRANSLATOR_DETECT_HTML', true),
-
-        // Detect pipe plural syntax and set is_plural on TranslationKey.
         'detect_plural' => env('TRANSLATOR_DETECT_PLURAL', true),
-
-        // Filenames (with .php extension) to skip during import.
         'exclude_files' => [],
-
-        // Records processed per DB chunk in TranslationKeyReplicator.
         'chunk_size' => env('TRANSLATOR_CHUNK_SIZE', 500),
-
     ],
 
     /*
@@ -104,38 +106,27 @@ return [
     */
 
     'export' => [
-
-        // Sort translation keys alphabetically in output files.
         'sort_keys' => env('TRANSLATOR_EXPORT_SORT_KEYS', true),
-
-        // Only export keys with Reviewed status (strictest quality gate).
         'require_approval' => env('TRANSLATOR_EXPORT_REQUIRE_APPROVAL', false),
-
     ],
 
     /*
     |--------------------------------------------------------------------------
     | Scanner Configuration
     |--------------------------------------------------------------------------
-    |
-    | Controls FileWalker when scanning source code for __() / trans() usages.
-    |
     */
 
     'scanner' => [
-
         'paths' => [
             app_path(),
             resource_path('views'),
         ],
-
         'ignore_paths' => [
             'vendor',
             'node_modules',
             'storage',
             '.git',
         ],
-
         'extensions' => [
             'php',
             'blade.php',
@@ -143,7 +134,6 @@ return [
             'ts',
             'vue',
         ],
-
     ],
 
     /*
@@ -168,10 +158,6 @@ return [
     'events' => [
         'import_completed' => env('TRANSLATOR_EVENT_IMPORT_COMPLETED', true),
         'export_completed' => env('TRANSLATOR_EVENT_EXPORT_COMPLETED', true),
-
-        // Dispatched by AITranslationService after every translation execution.
-        // Hook into this from a companion package to send notifications, invalidate
-        // caches, or trigger downstream workflows without polling.
         'ai_translation_completed' => env('TRANSLATOR_EVENT_AI_COMPLETED', true),
     ],
 
@@ -179,11 +165,6 @@ return [
     |--------------------------------------------------------------------------
     | Log Retention
     |--------------------------------------------------------------------------
-    |
-    | Number of days to retain ImportLog, ExportLog, and AITranslationLog records.
-    | The translator:prune-logs command (registered with the scheduler weekly)
-    | deletes records older than this threshold. Set to 0 to disable pruning.
-    |
     */
 
     'log_retention_days' => env('TRANSLATOR_LOG_RETENTION_DAYS', 90),
@@ -196,35 +177,11 @@ return [
 
     'ai' => [
 
-        /*
-        |----------------------------------------------------------------------
-        | Default Provider
-        |----------------------------------------------------------------------
-        */
-
         'default_provider' => env('TRANSLATOR_AI_PROVIDER', 'claude'),
-
-        /*
-        |----------------------------------------------------------------------
-        | Queue
-        |----------------------------------------------------------------------
-        */
 
         'queue' => env('TRANSLATOR_AI_QUEUE', 'default'),
 
-        /*
-        |----------------------------------------------------------------------
-        | Batch Size
-        |----------------------------------------------------------------------
-        */
-
         'batch_size' => env('TRANSLATOR_AI_BATCH_SIZE', 50),
-
-        /*
-        |----------------------------------------------------------------------
-        | Fallback Cost Rate
-        |----------------------------------------------------------------------
-        */
 
         'default_cost_per_1k_tokens' => 0.005,
 
@@ -234,40 +191,32 @@ return [
         |----------------------------------------------------------------------
         |
         | When enabled, the AI system prompt is enriched with previously reviewed
-        | translations for the target language. This improves terminology
-        | consistency across batches and across separate translation runs.
+        | translations for the target language. Only Reviewed-status translations
+        | are used — never Translated — to prevent AI output from feeding back
+        | into future AI prompts.
         |
-        | Only Reviewed-status translations are used as memory — never Translated
-        | — to prevent unreviewed AI output from being re-fed into future prompts.
+        | cache_ttl — seconds to cache the memory block per locale. The
+        | TranslationObserver automatically invalidates the cache when a
+        | translation is marked as Reviewed (via model events or the
+        | translator:review command).
         |
-        | limit — Maximum number of reviewed translations to inject per request.
-        |         Keep this low enough to stay within your provider's token budget.
-        |         Typical recommended range: 10–30.
+        | lang_name_cache_ttl — seconds to cache language name lookups.
+        | Language names rarely change; 1 hour is safe.
         |
         */
 
         'translation_memory' => [
             'enabled' => env('TRANSLATOR_AI_MEMORY_ENABLED', true),
             'limit' => env('TRANSLATOR_AI_MEMORY_LIMIT', 20),
+            'cache_ttl' => env('TRANSLATOR_AI_MEMORY_CACHE_TTL', 3600),
+            'lang_name_cache_ttl' => env('TRANSLATOR_AI_LANG_NAME_CACHE_TTL', 3600),
         ],
-
-        /*
-        |----------------------------------------------------------------------
-        | AI Translation Cache
-        |----------------------------------------------------------------------
-        */
 
         'cache' => [
             'enabled' => env('TRANSLATOR_AI_CACHE_ENABLED', true),
             'ttl' => env('TRANSLATOR_AI_CACHE_TTL', 86400),
             'prefix' => env('TRANSLATOR_AI_CACHE_PREFIX', 'translator_ai'),
         ],
-
-        /*
-        |----------------------------------------------------------------------
-        | Token Estimation
-        |----------------------------------------------------------------------
-        */
 
         'token_estimation' => [
             'default_ratio' => env('TRANSLATOR_AI_DEFAULT_RATIO', 4.0),
@@ -282,9 +231,14 @@ return [
         | Providers
         |----------------------------------------------------------------------
         |
-        | Pricing reference (always verify against current provider docs):
+        | Add or enable providers here. Each key is the provider name used
+        | with --provider= in CLI commands. The ChatGPT driver is shipped but
+        | commented out by default — add your OPENAI_API_KEY and uncomment.
+        |
+        | Pricing reference (verify against current provider docs):
         |   Claude Sonnet 4.6:  $3.00 / $15.00 per 1M tokens (input/output)
         |   GPT-4o:             $2.50 / $10.00 per 1M tokens
+        |   Claude Haiku 4.5:   $0.80 / $4.00 per 1M tokens
         |
         */
 
@@ -300,15 +254,15 @@ return [
                 'output_cost_per_1k_tokens' => 0.015,
             ],
 
-            // 'chatgpt' => [
-            //     'api_key'                   => env('OPENAI_API_KEY'),
-            //     'model'                     => 'gpt-4o',
-            //     'max_tokens'                => 4096,
-            //     'timeout_seconds'           => 120,
-            //     'max_retries'               => 3,
-            //     'input_cost_per_1k_tokens'  => 0.0025,
-            //     'output_cost_per_1k_tokens' => 0.010,
-            // ],
+            'chatgpt' => [
+                'api_key' => env('OPENAI_API_KEY'),
+                'model' => env('OPENAI_MODEL', 'gpt-4o'),
+                'max_tokens' => env('OPENAI_MAX_TOKENS', 4096),
+                'timeout_seconds' => env('OPENAI_TIMEOUT', 120),
+                'max_retries' => env('OPENAI_MAX_RETRIES', 3),
+                'input_cost_per_1k_tokens' => 0.0025,
+                'output_cost_per_1k_tokens' => 0.010,
+            ],
 
         ],
 

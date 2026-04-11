@@ -2,9 +2,25 @@ includes:
     - phpstan-baseline.neon
 
 parameters:
-    level: 5
+    level: 8
     paths:
         - src
         - config
         - database
     tmpDir: build/phpstan
+
+    # Allow dynamic config() calls that return mixed.
+    # These are typed explicitly at usage sites via casts.
+    ignoreErrors:
+        # config() returns mixed; callers cast explicitly with (string), (int), (bool).
+        - message: '#Parameter .+ of (function|method) .+ expects .+, mixed given#'
+          identifier: argument.type
+          reportUnmatched: false
+
+        # Eloquent builder magic — covered by larastan.
+        - message: '#Call to an undefined method Illuminate\\Database\\Eloquent\\Builder#'
+          reportUnmatched: false
+
+        # Laravel's `$this->fail()` in commands is annotated @return never in L11+.
+        - message: '#Ternary operator condition is always (true|false)#'
+          reportUnmatched: false

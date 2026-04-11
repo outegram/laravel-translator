@@ -43,6 +43,8 @@ interface AITranslationServiceContract
      * @param  Language  $language  The target Language model record.
      * @param  string|null  $provider  Provider override, or null for the default.
      * @param  TranslationEstimate|null  $estimate  Pre-execution estimate for cost variance logging.
+     * @param  bool  $bypassCache  When true, skip cache reads and force fresh API calls.
+     *                             Replaces the previous runtime config mutation pattern.
      * @return TranslationResponse Normalised response with translations and usage stats.
      */
     public function translate(
@@ -50,5 +52,6 @@ interface AITranslationServiceContract
         Language $language,
         ?string $provider = null,
         ?TranslationEstimate $estimate = null,
+        bool $bypassCache = false,
     ): TranslationResponse;
 }

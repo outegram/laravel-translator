@@ -14,8 +14,8 @@ use Syriable\Translator\Models\Language;
 /**
  * Facade providing static access to the AI translation service.
  *
- * Resolves from the container using the `translator` binding, which is
- * aliased to AITranslationService in TranslatorServiceProvider.
+ * Resolves {@see AITranslationServiceContract} from the container (not Laravel's
+ * `translator` binding, which is {@see \Illuminate\Contracts\Translation\Translator}).
  *
  * Usage:
  * ```php

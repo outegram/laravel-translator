@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Syriable\Translator\Services\AI;
 
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Syriable\Translator\AI\TranslationProviderManager;
+use Syriable\Translator\Contracts\AITranslationServiceContract;
 use Syriable\Translator\DTOs\AI\TranslationEstimate;
 use Syriable\Translator\DTOs\AI\TranslationRequest;
 use Syriable\Translator\DTOs\AI\TranslationResponse;
@@ -20,19 +22,21 @@ use Syriable\Translator\Models\TranslationKey;
 /**
  * Orchestrates the AI-powered translation workflow.
  *
- * Enforces the "no execution without cost preview" contract by exposing
- * estimate() and translate() as separate, explicitly ordered operations.
+ * Key improvements in this version:
  *
- * Workflow:
- *  1. Caller invokes estimate()  — no API call, returns cost breakdown.
- *  2. User confirms the estimate.
- *  3. Caller invokes translate() with the same request.
- *  4. Cached keys are retrieved — NO API call for those keys.
- *  5. Remaining keys are sent to the provider API.
- *  6. ALL translations (cached + fresh) are persisted and logged.
- *  7. AITranslationCompleted event is dispatched (when enabled in config).
+ * 1. `persistTranslations()` wraps all DB writes in a single `DB::transaction()`
+ *    and uses `upsert()` instead of separate insert/saveQuietly() calls.
+ *    This prevents partial writes under concurrent queue workers and eliminates
+ *    the unique-constraint race condition.
+ *
+ * 2. `bypassCache` is now an explicit parameter instead of a global config mutation.
+ *    The previous `config(['translator.ai.cache.enabled' => false])` call mutated
+ *    shared runtime state and corrupted cache behaviour in Octane and workers.
+ *
+ * 3. Cache key building is exposed as a public static method so the observer can
+ *    clear the same keys when translations are updated outside the service.
  */
-final readonly class AITranslationService
+final readonly class AITranslationService implements AITranslationServiceContract
 {
     public function __construct(
         private TranslationProviderManager $providerManager,
@@ -42,16 +46,6 @@ final readonly class AITranslationService
     // Estimation (No API Call)
     // -------------------------------------------------------------------------
 
-    /**
-     * Estimate the token usage and cost for the given request.
-     *
-     * No API call is made. The estimate is deterministic for the same input.
-     * Must be presented to the user before translate() is invoked.
-     *
-     * @param  TranslationRequest  $request  The translation request to estimate.
-     * @param  string|null  $provider  Provider override, or null for the default.
-     * @return TranslationEstimate Pre-execution cost and token estimate.
-     */
     public function estimate(TranslationRequest $request, ?string $provider = null): TranslationEstimate
     {
         return $this->providerManager
@@ -67,31 +61,22 @@ final readonly class AITranslationService
      * Execute the translation request, persist results, log the run, and
      * dispatch the AITranslationCompleted event.
      *
-     * Cache behaviour:
-     *  - Keys found in cache are reused without an API call (zero token cost).
-     *  - Keys NOT in cache are sent to the provider API.
-     *  - ALL translated keys (cached + fresh) are persisted to the database.
-     *  - A single AITranslationLog is recorded for the entire run.
-     *  - AITranslationCompleted is dispatched when the config flag is true.
-     *
-     * @param  TranslationRequest  $request  The translation request to execute.
-     * @param  Language  $language  The target Language model record.
-     * @param  string|null  $provider  Provider override, or null for the default.
-     * @param  TranslationEstimate|null  $estimate  Pre-execution estimate for cost variance logging.
-     * @return TranslationResponse Normalised response with translations and usage stats.
+     * @param  bool  $bypassCache  Skip cache reads for this specific run only.
+     *                             Does NOT mutate global config — safe for Octane.
      */
     public function translate(
         TranslationRequest $request,
         Language $language,
         ?string $provider = null,
         ?TranslationEstimate $estimate = null,
+        bool $bypassCache = false,
     ): TranslationResponse {
-        [$cachedTranslations, $uncachedRequest] = $this->partitionCachedKeys($request);
+        [$cachedTranslations, $uncachedRequest] = $this->partitionCachedKeys($request, $bypassCache);
 
         $resolvedProvider = $provider ?? $this->defaultProvider();
 
         if ($uncachedRequest->keyCount() === 0) {
-            // ── Full cache hit ────────────────────────────────────────────────
+            // ── Full cache hit ─────────────────────────────────────────────
             $response = $this->buildCachedOnlyResponse($cachedTranslations, $resolvedProvider);
 
             $this->persistTranslations($response, $language, $request);
@@ -101,7 +86,7 @@ final readonly class AITranslationService
             return $response;
         }
 
-        // ── Partial or full API call ──────────────────────────────────────────
+        // ── Partial or full API call ───────────────────────────────────────
         $apiResponse = $this->providerManager
             ->driver($provider)
             ->translate($uncachedRequest);
@@ -124,11 +109,14 @@ final readonly class AITranslationService
     /**
      * Split the request into cached translations and an uncached sub-request.
      *
+     * @param  bool  $bypass  When true, treat all keys as uncached regardless of
+     *                        what the cache store holds. This replaces the previous
+     *                        global config mutation approach.
      * @return array{array<string, string>, TranslationRequest}
      */
-    private function partitionCachedKeys(TranslationRequest $request): array
+    private function partitionCachedKeys(TranslationRequest $request, bool $bypass = false): array
     {
-        if (! config('translator.ai.cache.enabled', true)) {
+        if ($bypass || ! config('translator.ai.cache.enabled', true)) {
             return [[], $request];
         }
 
@@ -136,7 +124,7 @@ final readonly class AITranslationService
         $uncached = [];
 
         foreach ($request->keys as $key => $sourceValue) {
-            $cacheKey = $this->buildCacheKey($request->targetLanguage, $key, $sourceValue);
+            $cacheKey = self::buildAICacheKey($request->targetLanguage, $key, $sourceValue);
             $hit = Cache::get($cacheKey);
 
             if (is_string($hit) && filled($hit)) {
@@ -159,7 +147,13 @@ final readonly class AITranslationService
         return [$cached, $uncachedRequest];
     }
 
-    private function buildCacheKey(string $targetLocale, string $key, string $sourceValue): string
+    /**
+     * Build the cache key for an AI-translated value.
+     *
+     * Public static so that the TranslationObserver can build the same key
+     * format when invalidating entries on Translation model events.
+     */
+    public static function buildAICacheKey(string $targetLocale, string $key, string $sourceValue): string
     {
         $prefix = config('translator.ai.cache.prefix', 'translator_ai');
 
@@ -182,7 +176,7 @@ final readonly class AITranslationService
             $sourceValue = $request->keys[$key] ?? '';
 
             Cache::put(
-                key: $this->buildCacheKey($request->targetLanguage, $key, $sourceValue),
+                key: self::buildAICacheKey($request->targetLanguage, $key, $sourceValue),
                 value: $translatedValue,
                 ttl: $ttl,
             );
@@ -238,28 +232,20 @@ final readonly class AITranslationService
     // -------------------------------------------------------------------------
 
     /**
-     * Persist translated values to Translation records in the database.
+     * Persist translated values to the database using a single transaction
+     * and a bulk `upsert()`.
      *
-     * Uses a bulk pre-load strategy to avoid N+1 queries:
-     *  - One query to resolve the Group record for the request (prevents cross-group collisions).
-     *  - One query to load all matching TranslationKey records scoped by group_id.
-     *  - One query to load all existing Translation rows for the target language.
-     *  - One bulk INSERT for all new rows.
-     *  - Individual saveQuietly() calls only for existing rows that need updating.
+     * Key improvements over the previous N+1 pattern:
      *
-     * All model classes are resolved from config('translator.models.*') to support
-     * application-level model overrides.
-     *
-     * ### Group scoping
-     *
-     * When `$request->groupName` maps to a real Group record, keys are looked up
-     * scoped by `group_id`. This prevents silent data corruption when the same key
-     * name exists in multiple groups (e.g. 'failed' in 'auth' and 'passwords').
-     *
-     * When the group name does not correspond to a database record (e.g. the
-     * sentinel value '_all' used by AITranslateCommand for cross-group batches),
-     * scoping by group_id is skipped and keys are matched by name alone — preserving
-     * the original behaviour for that call path.
+     * - All reads happen BEFORE the transaction begins (no shared lock contention).
+     * - A single `upsert()` replaces both the bulk INSERT and the per-row
+     *   `saveQuietly()` calls — one query for all rows.
+     * - The `DB::transaction()` wrapper ensures the upsert is atomic: either all
+     *   rows are written or none are, preventing partial-update corruption under
+     *   concurrent queue workers processing the same language.
+     * - On conflict, only `value`, `status`, and `updated_at` are overwritten.
+     *   The `created_at` and `translation_key_id` / `language_id` columns remain
+     *   stable even when concurrent jobs race on the same key.
      */
     private function persistTranslations(
         TranslationResponse $response,
@@ -276,16 +262,12 @@ final readonly class AITranslationService
 
         $keys = array_keys($response->translations);
 
-        // Try to resolve the group so we can scope the key lookup by group_id.
-        // When the group name is a sentinel (e.g. '_all') or refers to a group that
-        // does not yet exist, $group will be null and we fall back to name-only lookup.
+        // Resolve the group outside the transaction (read-only, no contention).
         $group = $groupModel::query()
             ->where('name', $request->groupName)
             ->where('namespace', $request->namespace)
             ->first();
 
-        // Build the TranslationKey collection — scoped when a real group is resolved,
-        // unscoped (by name only) when the request spans multiple groups.
         $keyQuery = $translationKeyModel::query()->whereIn('key', $keys);
 
         if ($group !== null) {
@@ -294,15 +276,8 @@ final readonly class AITranslationService
 
         $keyModels = $keyQuery->get()->keyBy('key');
 
-        // Bulk load all existing Translation rows for this language — 1 query.
-        $existingTranslations = $translationModel::query()
-            ->whereIn('translation_key_id', $keyModels->pluck('id'))
-            ->where('language_id', $language->id)
-            ->get()
-            ->keyBy('translation_key_id');
-
-        $toInsert = [];
         $now = now();
+        $records = [];
 
         foreach ($response->translations as $dotKey => $translatedValue) {
             if (! filled($translatedValue)) {
@@ -315,41 +290,34 @@ final readonly class AITranslationService
                 continue;
             }
 
-            $existing = $existingTranslations->get($keyModel->id);
-
-            if ($existing === null) {
-                // Queue for bulk insert.
-                $toInsert[] = [
-                    'translation_key_id' => $keyModel->id,
-                    'language_id' => $language->id,
-                    'value' => $translatedValue,
-                    'status' => TranslationStatus::Translated->value,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ];
-            } else {
-                $existing->fill([
-                    'value' => $translatedValue,
-                    'status' => TranslationStatus::Translated,
-                ])->saveQuietly();
-            }
+            $records[] = [
+                'translation_key_id' => $keyModel->id,
+                'language_id' => $language->id,
+                'value' => $translatedValue,
+                'status' => TranslationStatus::Translated->value,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
         }
 
-        // Single bulk insert for all new rows — 1 query.
-        if (! empty($toInsert)) {
-            $translationModel::query()->insert($toInsert);
+        if (empty($records)) {
+            return;
         }
+
+        // Single atomic upsert — safe under concurrent workers.
+        DB::transaction(static function () use ($translationModel, $records): void {
+            $translationModel::query()->upsert(
+                $records,
+                uniqueBy: ['translation_key_id', 'language_id'],
+                update: ['value', 'status', 'updated_at'],
+            );
+        });
     }
 
     // -------------------------------------------------------------------------
     // Audit Logging
     // -------------------------------------------------------------------------
 
-    /**
-     * Record the outcome of a translation execution to AITranslationLog.
-     *
-     * Returns the persisted log record so it can be passed to the event.
-     */
     private function recordAILog(
         TranslationRequest $request,
         TranslationResponse $response,
@@ -377,9 +345,6 @@ final readonly class AITranslationService
         ]);
     }
 
-    /**
-     * Dispatch the AITranslationCompleted event when enabled in config.
-     */
     private function dispatchCompletedEvent(AITranslationLog $log): void
     {
         if (config('translator.events.ai_translation_completed', true)) {
